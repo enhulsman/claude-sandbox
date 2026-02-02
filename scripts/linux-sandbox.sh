@@ -249,8 +249,9 @@ CLAUDE_JSON="${HOME}/.claude.json"
 # Without it, interactive mode can't identify the user and shows the login screen.
 [[ -f "$CLAUDE_JSON" ]]       && BWRAP_ARGS+=(--bind "$CLAUDE_JSON" "$CLAUDE_JSON")
 
-# Workspace
-BWRAP_ARGS+=(--bind "$_CS_WORKSPACE" "$_CS_WORKSPACE")
+# Workspace — mounted by the writable paths loop above (via profile config).
+# The launcher (claude-sandbox.sh) always injects $_CS_WORKSPACE into
+# _CS_WRITABLE_PATHS, so it's guaranteed to be covered.
 
 # --- Network isolation + proxy bridge ---
 # Mount the socket directory as a whole rather than individual files.

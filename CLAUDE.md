@@ -18,9 +18,10 @@ nix run . -- --profile dev
 # Preview configuration without executing (dry run)
 nix run . -- --profile dev --dry-run
 
-# Run isolation verification tests
+# Run isolation verification tests (inside sandbox)
 nix run . -- --profile dev --exec bash scripts/verify.sh
-# Or via the verify package:
+
+# Run verify tests on host (without sandbox — useful for baseline comparison)
 nix run .#verify
 
 # Update all flake dependencies (nixpkgs, claude-code-nix, etc.)

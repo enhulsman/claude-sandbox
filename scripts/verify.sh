@@ -6,7 +6,7 @@
 #
 # Usage:
 #   claude-sandbox --profile nixos-admin -- -p "bash /path/to/verify.sh"
-#   nix run .#verify            # standalone (tests outside sandbox too)
+#   nix run .#verify            # standalone on HOST (no sandbox — baseline comparison)
 
 set -euo pipefail
 
