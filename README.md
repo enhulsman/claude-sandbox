@@ -5,7 +5,7 @@ A cross-platform, defense-in-depth sandbox for running Claude Code safely on
 configuration.
 
 ```
-nix run github:you/claude-sandbox -- --profile dev -- -p "review this code"
+nix run github:enhulsman/claude-sandbox -- --profile dev -- -p "review this code"
 ```
 
 ---
@@ -54,24 +54,36 @@ curl -sSf -L https://install.determinate.systems/nix | sh -s -- install
 nix --version
 ```
 
-You also need Claude Code installed:
+You also need Claude Code installed and authenticated:
 
 ```bash
+# Install Claude Code
 npm install -g @anthropic-ai/claude-code
+
+# Log in (do this BEFORE first sandbox run)
+claude
 ```
+
+Authentication requires two files: `~/.claude/.credentials.json` (OAuth token)
+and `~/.claude.json` (account binding — accountUuid, organizationUuid, email).
+Both are automatically mounted into the sandbox. If you've already logged in
+to Claude Code, no extra setup is needed.
 
 ### Run It
 
 ```bash
 # Clone (or point to your GitHub URL directly)
-git clone https://github.com/you/claude-sandbox.git
+git clone https://github.com/enhulsman/claude-sandbox.git
 cd claude-sandbox
 
-# Run sandboxed Claude Code with the 'dev' profile
+# Run sandboxed Claude Code with the 'dev' profile (interactive)
+nix run . -- --profile dev
+
+# Run with a one-shot prompt
 nix run . -- --profile dev -- -p "help me refactor this function"
 
 # Or run directly from GitHub (no clone needed)
-nix run github:you/claude-sandbox -- --profile dev -- -p "hello"
+nix run github:enhulsman/claude-sandbox -- --profile dev -- -p "hello"
 ```
 
 ### Per-Platform Examples
@@ -127,6 +139,8 @@ All profiles **block**: `~/.ssh`, `~/.gnupg`, `~/.aws`, `/etc/shadow`,
 browser profiles, keyrings, and other credential stores.
 
 All profiles always include `~/claude-workspace` as a writable directory.
+`platform.claude.com` is always included in allowed domains (required for
+authentication).
 
 ### Custom Profiles
 
@@ -189,7 +203,8 @@ the workspace. You review them. You apply them with sudo.
       can revert if needed.
 - [ ] **Clean the workspace.** `rm -rf ~/claude-workspace/*` — previous session
       artifacts should not contaminate new sessions.
-- [ ] **Verify the sandbox** (first time or after updates): `nix run .#verify`
+- [ ] **Verify the sandbox** (first time or after updates):
+      `nix run . -- --profile dev --exec bash scripts/verify.sh`
 
 ### During the Session
 
@@ -213,9 +228,15 @@ If something seems wrong: **end the session, start fresh, review the audit log.*
 
 ### After the Session
 
-The launcher prints a session summary automatically. For deeper review:
+The launcher prints a session summary automatically on exit, showing how many
+requests were allowed/blocked and listing any blocked requests for review.
+
+For deeper review:
 
 ```bash
+# Full audit log — every request with timestamp and status
+cat ~/claude-workspace/.proxy-audit.log
+
 # What domains were contacted?
 awk '{print $4}' ~/claude-workspace/.proxy-audit.log | sort -u
 
@@ -224,6 +245,9 @@ grep BLOCKED ~/claude-workspace/.proxy-audit.log
 
 # Were any unexpected domains ALLOWED?
 grep ALLOWED ~/claude-workspace/.proxy-audit.log | grep -v anthropic
+
+# Proxy startup messages and errors (separate from audit)
+cat ~/claude-workspace/.proxy.log
 
 # Review Claude's proposals before applying
 ls ~/claude-workspace/
@@ -293,14 +317,26 @@ sudo nixos-rebuild switch
 
 1. **bubblewrap** creates new mount and network namespaces
 2. `--unshare-net` removes **all** network access — airtight, no bypass without kernel exploit
-3. **socat** bridges a Unix domain socket (inside sandbox) to the TCP proxy (outside)
-4. `HTTP_PROXY`/`ALL_PROXY` environment variables route Claude's traffic through this bridge
+3. A **two-stage socat bridge** provides the only path out of the sandbox:
+   - Host side: `socat UNIX-LISTEN:/tmp/proxy.sock → TCP:127.0.0.1:PROXY_PORT`
+   - Sandbox side: `socat TCP-LISTEN:18080 → UNIX-CONNECT:/tmp/proxy.sock`
+4. `HTTP_PROXY`/`ALL_PROXY` environment variables route Claude's traffic through the internal TCP port
 5. The **egress proxy** checks every request against the domain allowlist
+
+The two-stage bridge is needed because Claude Code's compiled Node.js binary
+doesn't support Unix socket proxy URLs — it needs a TCP endpoint. The Unix
+socket passes through bwrap's `--bind`, connecting the network-isolated sandbox
+to the host-side proxy.
 
 Network path:
 ```
-Claude (sandbox) → Unix socket → socat → TCP proxy → allowlist check → internet
+Claude (sandbox) → TCP:18080 → socat → Unix socket → socat → TCP proxy → allowlist → internet
 ```
+
+On **usr-merge systems** (Debian Bookworm, Raspberry Pi OS, Ubuntu 24+) where
+`/bin`, `/lib`, `/sbin` are symlinks to `/usr/*`, the sandbox correctly
+mounts `/usr` and recreates the symlinks inside bwrap rather than
+following the symlinks (which would break the dynamic linker).
 
 ### macOS (Apple Silicon, Intel)
 
@@ -325,6 +361,8 @@ The proxy is the security-critical portable component. Same Python on every OS.
 - Checks every destination hostname against the configured allowlist
 - Logs every request (allowed or blocked) with timestamp to the audit file
 - Returns HTTP 403 for blocked requests
+- Proxy output (startup messages, errors) goes to `~/claude-workspace/.proxy.log`
+- Audit log (ALLOWED/BLOCKED entries) goes to `~/claude-workspace/.proxy-audit.log`
 
 ### Seatbelt vs Bubblewrap
 
@@ -341,26 +379,26 @@ The proxy is the security-critical portable component. Same Python on every OS.
 
 ## Verification
 
-Run the test suite to confirm isolation is working:
+Run the verification script to confirm isolation is working:
 
 ```bash
-# Run verification tests
-nix run .#verify
-
-# Or inside a sandbox session:
-claude-sandbox --profile nixos-admin -- -p "Run: bash scripts/verify.sh"
+# Run inside the sandbox using --exec mode
+nix run . -- --profile dev --exec bash scripts/verify.sh
 ```
+
+Expected result: all tests pass (green ✓), with one warning for home directory
+write access (expected — `~/.claude.json` needs to be writable for auth).
 
 Tests include:
 - `~/.ssh`, `~/.gnupg`, `~/.aws`, `/etc/shadow` are inaccessible
 - Workspace is writable
-- System paths are read-only
+- `/etc` and `/usr` are read-only
 - Direct ping fails (Linux: `--unshare-net`)
 - Non-allowed domains are blocked via proxy
 - Allowed domains (api.anthropic.com) are reachable
-- DNS exfiltration is blocked
-- sudo is blocked
-- Filesystem remount is blocked
+- DNS exfiltration is blocked (Linux)
+- Direct TCP connections are blocked (Linux)
+- sudo, remount, and user creation are blocked
 
 **Always verify after first setup and after any updates.**
 
@@ -376,11 +414,11 @@ claude-sandbox/
 ├── config.toml                   # Profile definitions
 ├── scripts/
 │   ├── claude-sandbox.sh         # Main launcher: args, config, proxy, dispatch
-│   ├── linux-sandbox.sh          # Linux: bubblewrap + socat
+│   ├── linux-sandbox.sh          # Linux: bubblewrap + two-stage socat bridge
 │   ├── macos-sandbox.sh          # macOS: sandbox-exec + Seatbelt
 │   ├── generate-seatbelt.sh      # Generates .sb profile from config
 │   ├── egress-proxy.py           # Network proxy (Python, cross-platform)
-│   └── verify.sh                 # Sandbox escape tests
+│   └── verify.sh                 # Sandbox isolation tests
 └── README.md                     # You are here
 ```
 
@@ -397,8 +435,16 @@ Options:
                         Built-in: dev, nixos-admin, macos-admin, strict
   --workspace DIR       Writable workspace (default: ~/claude-workspace)
   --config FILE         Path to config.toml (default: built-in)
-  --dry-run             Print what would be done, don't execute
+  --exec CMD [ARGS]     Run CMD instead of Claude Code (for testing/debugging)
+  --dry-run             Show what would be done without executing
   -h, --help            Show help
+
+Examples:
+  claude-sandbox --profile dev                                # interactive Claude Code
+  claude-sandbox --profile dev -- -p "hello"                  # one-shot prompt
+  claude-sandbox --profile dev --exec bash scripts/verify.sh  # run verify script
+  claude-sandbox --profile dev --exec bash                    # interactive shell in sandbox
+  claude-sandbox --profile dev --exec cat /etc/shadow         # test if file is blocked
 
 Environment Variables:
   CLAUDE_SANDBOX_PROFILE    Default profile
@@ -423,14 +469,32 @@ The Nix flake should provide bubblewrap automatically. If running outside Nix:
 sandbox-exec is built into macOS. If you see this, something is wrong with your
 PATH. Try: `/usr/bin/sandbox-exec --help`
 
+**Claude Code prompts for login despite being authenticated**
+The sandbox needs both `~/.claude/.credentials.json` (OAuth token) and
+`~/.claude.json` (account binding). The latter is a separate file in your home
+directory (not inside `~/.claude/`) that contains your `oauthAccount` with
+`accountUuid` and `organizationUuid`. Make sure you've logged into Claude Code
+at least once outside the sandbox. Both files are automatically mounted.
+
 **Claude Code hangs at startup**
 The proxy may not be starting. Check: `ss -tlnp | grep PROXY_PORT` (Linux) or
-`lsof -i :PORT` (macOS). The audit log at `~/claude-workspace/.proxy-audit.log`
+`lsof -i :PORT` (macOS). The proxy log at `~/claude-workspace/.proxy.log`
+will show startup messages, and `~/claude-workspace/.proxy-audit.log`
 will show if requests are reaching the proxy.
 
 **"Connection refused" or "proxy error"**
 Check that `api.anthropic.com` is in the profile's `allowed_domains`. The proxy
 blocks everything not explicitly allowed.
+
+**"Connection reset by peer" from socat during blocked requests**
+This is normal. When the proxy blocks a domain, it closes the connection,
+which socat reports as a connection reset. These messages go to the proxy log
+file and don't affect Claude Code.
+
+**`--exec` mode: "Try 'coreutils --help'" instead of running the command**
+This happened with an earlier version where symlinks were resolved. The current
+version preserves argv[0] for Nix multicall binaries (`cat`, `ls`, etc. are
+symlinks to `coreutils`). Update to the latest version.
 
 **Verification tests fail**
 Run with `--dry-run` first to see what paths and domains are configured.
@@ -443,7 +507,7 @@ paths to your profile's `read_only` list in `config.toml`.
 
 **Raspberry Pi: first run is slow**
 Nix is downloading pre-built packages for aarch64-linux. Subsequent runs use
-the local cache and start in milliseconds.
+the local cache and start in under a second.
 
 
 ---
@@ -481,9 +545,9 @@ the local cache and start in milliseconds.
 | 2 | Claude Code internal sandbox | Built-in `/sandbox` (redundant) |
 | 3 | Network namespace / Seatbelt deny | Kernel-level network isolation |
 | 4 | Egress proxy | Domain allowlist + audit logging |
-| 5 | socat bridge / localhost restriction | Only path from sandbox to network |
+| 5 | Two-stage socat bridge / localhost restriction | Only path from sandbox to network |
 | 6 | Blocked paths | Secrets bound to /dev/null or Seatbelt deny |
-| 7 | Read-only mounts | System paths cannot be modified |
+| 7 | Read-only mounts (`/etc`, `/usr`, `/nix`) | System paths cannot be modified |
 | 8 | Writable workspace only | Changes contained to review directory |
 | 9 | Ephemeral /tmp | No session persistence |
 | 10 | Audit logging | Every request recorded for review |
