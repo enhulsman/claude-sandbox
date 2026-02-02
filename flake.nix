@@ -4,9 +4,11 @@
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
     flake-utils.url = "github:numtide/flake-utils";
+    claude-code-nix.url = "github:sadjow/claude-code-nix";
+    claude-code-nix.inputs.nixpkgs.follows = "nixpkgs";
   };
 
-  outputs = { self, nixpkgs, flake-utils }:
+  outputs = { self, nixpkgs, flake-utils, claude-code-nix }:
     flake-utils.lib.eachSystem [
       "x86_64-linux"     # NixOS desktop, Ubuntu VPS
       "aarch64-linux"    # Raspberry Pi
@@ -34,6 +36,7 @@
           pkgs.gawk
           pkgs.curl       # for verification tests
           pkgs.findutils
+          claude-code-nix.packages.${system}.default
         ];
 
         # The egress proxy script, installed as a standalone bin
@@ -78,6 +81,7 @@
           default = launcherScript;
           verify = verifyScript;
           proxy = egressProxy;
+          claude-code = claude-code-nix.packages.${system}.default;
         };
 
         # `nix develop` — drop into a shell with all tools available

@@ -207,7 +207,8 @@ else
   CLAUDE_BIN="$(command -v claude 2>/dev/null || true)"
   if [[ -z "$CLAUDE_BIN" ]]; then
     echo "ERROR: 'claude' not found in PATH." >&2
-    echo "  Install Claude Code: npm install -g @anthropic-ai/claude-code" >&2
+    echo "  This should not happen - Claude Code is bundled with the sandbox." >&2
+    echo "  Please report this as a bug: https://github.com/enhulsman/claude-sandbox/issues" >&2
     exit 1
   fi
   CLAUDE_BIN_REAL="$(readlink -f "$CLAUDE_BIN")"

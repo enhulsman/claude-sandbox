@@ -44,7 +44,7 @@ sandbox fails, the outer sandbox still holds.
 
 ### Prerequisites
 
-All you need is the Nix package manager. It runs on every target platform.
+All you need is the Nix package manager. It runs on every target platform and includes Claude Code automatically.
 
 ```bash
 # Install Nix (one-time, ~2 minutes, works on Linux and macOS)
@@ -54,20 +54,18 @@ curl -sSf -L https://install.determinate.systems/nix | sh -s -- install
 nix --version
 ```
 
-You also need Claude Code installed and authenticated:
+The first run will download Claude Code (~180MB native binary) and sandbox components. Subsequent runs start instantly from cache.
+
+**Authentication**: Before your first session, you need Claude Code credentials:
 
 ```bash
-# Install Claude Code
-npm install -g @anthropic-ai/claude-code
+# Start Claude Code to authenticate (bundled with sandbox)
+nix run github:enhulsman/claude-sandbox#claude-code
 
-# Log in (do this BEFORE first sandbox run)
-claude
+# Follow the login prompts, then exit
 ```
 
-Authentication requires two files: `~/.claude/.credentials.json` (OAuth token)
-and `~/.claude.json` (account binding — accountUuid, organizationUuid, email).
-Both are automatically mounted into the sandbox. If you've already logged in
-to Claude Code, no extra setup is needed.
+This creates `~/.claude/.credentials.json` and `~/.claude.json`, which are automatically mounted into the sandbox.
 
 ### Run It
 
@@ -118,6 +116,23 @@ alias claude-safe='nix run /path/to/claude-sandbox --'
 alias claude-admin='nix run /path/to/claude-sandbox -- --profile nixos-admin --'
 alias claude-dev='nix run /path/to/claude-sandbox -- --profile dev --'
 alias claude-strict='nix run /path/to/claude-sandbox -- --profile strict --'
+```
+
+### Updating Claude Code
+
+Claude Code is bundled via [claude-code-nix](https://github.com/sadjow/claude-code-nix) (updated hourly). To get the latest version:
+
+```bash
+# Update all flake inputs
+nix flake update
+
+# Or run directly from GitHub (always latest)
+nix run github:enhulsman/claude-sandbox -- --profile dev
+```
+
+To pin to a specific version, edit `flake.nix`:
+```nix
+claude-code-nix.url = "github:sadjow/claude-code-nix?ref=v2.0.76";
 ```
 
 
@@ -458,7 +473,7 @@ Environment Variables:
 ## Troubleshooting
 
 **"claude not found in PATH"**
-Install Claude Code: `npm install -g @anthropic-ai/claude-code`
+This should not happen as Claude Code is bundled with the sandbox. If you see this error, please report it as a bug with your system details.
 
 **"bwrap: No such file or directory" (Linux)**
 The Nix flake should provide bubblewrap automatically. If running outside Nix:
