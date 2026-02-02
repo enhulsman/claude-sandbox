@@ -38,6 +38,9 @@ Options:
   --workspace DIR     Writable workspace directory (default: ~/claude-workspace)
   --config FILE       Path to config.toml
   --exec CMD [ARGS]   Run CMD instead of Claude Code (for testing/verify)
+  --shell             Shortcut for --exec bash (interactive shell in sandbox)
+  --yolo              Pass --dangerously-skip-permissions to Claude Code
+                      (safe when using the external sandbox as the boundary)
   --dry-run           Show what would be done without executing
   -h, --help          Show this help
 
@@ -49,7 +52,9 @@ Profiles:
 
 Examples:
   claude-sandbox --profile dev -- -p "review this codebase"
+  claude-sandbox --profile dev --yolo                       # autonomous mode
   claude-sandbox --profile dev --exec bash                  # interactive shell
+  claude-sandbox --profile dev --shell                      # same as above
   claude-sandbox --profile dev --exec bash verify.sh        # run a script
   claude-sandbox --profile strict -- -p "audit this repo"
 EOF
@@ -60,6 +65,7 @@ EOF
 CLAUDE_ARGS=()
 EXEC_CMD=()
 DRY_RUN=0
+YOLO=0
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -67,6 +73,8 @@ while [[ $# -gt 0 ]]; do
     --workspace) WORKSPACE="$2"; shift 2 ;;
     --config)    CONFIG_FILE="$2"; shift 2 ;;
     --dry-run)   DRY_RUN=1; shift ;;
+    --yolo)      YOLO=1; shift ;;
+    --shell)     EXEC_CMD=("bash"); break ;;
     --exec)      shift; EXEC_CMD=("$@"); break ;;
     -h|--help)   usage ;;
     --)          shift; CLAUDE_ARGS=("$@"); break ;;
@@ -193,6 +201,71 @@ _CS_ALLOWED_DOMAINS="$(printf '%s\n' "${ALLOWED_DOMAINS[@]}")"
 export _CS_WORKSPACE="$WORKSPACE"
 export _CS_AUDIT_LOG="$AUDIT_LOG"
 
+# ── Generate Sandbox Context for Claude Code ─────────────────
+# Creates a system prompt addendum so Claude Code understands it's running
+# in a sandbox and can handle restrictions gracefully instead of getting
+# confused by missing files or blocked network requests.
+# Uses --append-system-prompt-file to inject without touching user files.
+SANDBOX_CONTEXT_FILE="$WORKSPACE/.sandbox-context.md"
+if [[ ${#EXEC_CMD[@]} -eq 0 ]]; then
+  cat > "$SANDBOX_CONTEXT_FILE" <<CONTEXT_EOF
+# Sandbox Environment
+
+You are running inside claude-sandbox (profile: $PROFILE), an external
+security sandbox that restricts your filesystem and network access.
+This is intentional and protects the user's system. Work within these
+constraints gracefully — do not try to work around them.
+
+## Filesystem
+
+Blocked paths (will return "No such file" or "Permission denied"):
+$(for p in "${BLOCKED_PATHS[@]}"; do [[ -n "$p" ]] && echo "- $p"; done)
+
+These files are intentionally hidden from you. Do not suggest the user
+check if they exist — they do, but the sandbox blocks access.
+If a task requires a blocked file (e.g. SSH config for git operations),
+explain what you need and ask the user to perform that step outside
+the sandbox.
+
+Read-only paths (you can read but not write):
+$(for p in "${READ_ONLY_PATHS[@]}"; do [[ -n "$p" ]] && echo "- $p"; done)
+
+Writable paths:
+$(for p in "${WRITABLE_PATHS[@]}"; do [[ -n "$p" ]] && echo "- $p"; done)
+- $WORKSPACE (sandbox workspace — always writable)
+
+Write all output files to the workspace: $WORKSPACE
+
+## Network
+
+All network traffic goes through a filtering proxy. Only these domains
+are reachable:
+$(for d in "${ALLOWED_DOMAINS[@]}"; do echo "- $d"; done)
+
+Any request to other domains will be blocked. Do not attempt to curl,
+wget, or fetch from unlisted domains — it will fail silently or return
+a connection error. If you need a resource from a blocked domain,
+tell the user which URL you need and ask them to provide the content.
+
+## Handling Restrictions
+
+When you encounter a "Permission denied", "No such file", or
+"Connection refused" error:
+1. Check if the path/domain is in the blocked/unlisted lists above
+2. If yes: explain to the user that the sandbox blocks this access
+   and suggest an alternative approach
+3. Do NOT retry the same command or attempt workarounds
+CONTEXT_EOF
+
+  # Inject the context file as a system prompt addendum
+  CLAUDE_ARGS=("--append-system-prompt-file" "$SANDBOX_CONTEXT_FILE" "${CLAUDE_ARGS[@]}")
+fi
+
+# ── Inject --dangerously-skip-permissions if --yolo ──────────
+if [[ "$YOLO" == "1" && ${#EXEC_CMD[@]} -eq 0 ]]; then
+  CLAUDE_ARGS=("--dangerously-skip-permissions" "${CLAUDE_ARGS[@]}")
+fi
+
 # ── Locate Claude Binary (skip in --exec mode) ──────────────
 if [[ ${#EXEC_CMD[@]} -gt 0 ]]; then
   # --exec mode: use the command as-is (don't resolve symlinks).
@@ -307,6 +380,9 @@ echo "│  Claude Sandbox                                  │"
 echo "│  Profile:   $PROFILE"
 echo "│  Workspace: $WORKSPACE"
 echo "│  Sandbox:   $PLATFORM_LABEL"
+if [[ "$YOLO" == "1" ]]; then
+echo "│  Permissions: skip (--yolo)"
+fi
 echo "└──────────────────────────────────────────────────┘"
 
 # ── Dry Run ───────────────────────────────────────────────────

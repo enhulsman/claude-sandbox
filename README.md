@@ -115,6 +115,7 @@ Add to `~/.bashrc` or `~/.zshrc`:
 alias claude-safe='nix run /path/to/claude-sandbox --'
 alias claude-admin='nix run /path/to/claude-sandbox -- --profile nixos-admin --'
 alias claude-dev='nix run /path/to/claude-sandbox -- --profile dev --'
+alias claude-yolo='nix run /path/to/claude-sandbox -- --profile dev --yolo --'
 alias claude-strict='nix run /path/to/claude-sandbox -- --profile strict --'
 ```
 
@@ -451,14 +452,17 @@ Options:
   --workspace DIR       Writable workspace (default: ~/claude-workspace)
   --config FILE         Path to config.toml (default: built-in)
   --exec CMD [ARGS]     Run CMD instead of Claude Code (for testing/debugging)
+  --shell               Shortcut for --exec bash (interactive shell in sandbox)
+  --yolo                Pass --dangerously-skip-permissions to Claude Code
   --dry-run             Show what would be done without executing
   -h, --help            Show help
 
 Examples:
   claude-sandbox --profile dev                                # interactive Claude Code
+  claude-sandbox --profile dev --yolo                         # autonomous (no prompts)
   claude-sandbox --profile dev -- -p "hello"                  # one-shot prompt
   claude-sandbox --profile dev --exec bash scripts/verify.sh  # run verify script
-  claude-sandbox --profile dev --exec bash                    # interactive shell in sandbox
+  claude-sandbox --profile dev --shell                        # interactive shell
   claude-sandbox --profile dev --exec cat /etc/shadow         # test if file is blocked
 
 Environment Variables:
@@ -466,6 +470,45 @@ Environment Variables:
   CLAUDE_SANDBOX_WORKSPACE  Default workspace directory
   CLAUDE_SANDBOX_CONFIG     Path to config.toml
 ```
+
+### Sandbox Context Injection
+
+When launching Claude Code (not `--exec`/`--shell`), the sandbox automatically
+generates a context file at `~/claude-workspace/.sandbox-context.md` and injects
+it via `--append-system-prompt-file`. This tells Claude Code:
+
+- Which paths are blocked and why
+- Which domains are reachable
+- How to handle "Permission denied" and "Connection refused" gracefully
+- Where to write output files
+
+This means Claude Code won't waste time retrying blocked operations or
+suggesting you check if `~/.ssh/config` exists — it knows the sandbox is hiding
+it intentionally.
+
+### `--yolo` Mode
+
+`--yolo` passes `--dangerously-skip-permissions` to Claude Code, which disables
+all internal permission prompts (file edits, bash commands, etc.). Normally this
+is dangerous because Claude Code could do anything. Inside the sandbox, **the
+sandbox itself is the permission boundary** — Claude Code can only write to
+allowed paths and reach allowed domains regardless of what it tries.
+
+This eliminates approval fatigue: you don't need to approve `mkdir`, `ls`, or
+`pip install` one by one because the sandbox already constrains the blast
+radius.
+
+```bash
+# Autonomous mode: Claude works uninterrupted within sandbox boundaries
+nix run . -- --profile dev --yolo -- -p "refactor the auth module"
+
+# Interactive autonomous mode
+nix run . -- --profile dev --yolo
+```
+
+**When NOT to use `--yolo`**: if you're working with the `dev` profile and your
+project directory is writable, Claude can modify any file in your project
+without asking. Make sure to `git commit` before starting so you can revert.
 
 
 ---
