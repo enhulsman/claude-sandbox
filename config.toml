@@ -1,0 +1,189 @@
+# ══════════════════════════════════════════════════════════════
+# Claude Sandbox — Profile Configuration
+# ══════════════════════════════════════════════════════════════
+#
+# Each profile defines three things:
+#   filesystem.read_only  — paths Claude can read but not write
+#   filesystem.blocked    — paths Claude cannot access at all
+#   filesystem.writable   — paths Claude can read AND write
+#   network.allowed_domains — domains Claude can reach via the proxy
+#
+# Paths support ~ for home directory expansion.
+# Select a profile at launch with: claude-sandbox --profile NAME
+#
+# The workspace (~/claude-workspace by default) is always writable
+# regardless of profile, and does not need to be listed.
+
+
+# ─────────────────────────────────────────────────────────────
+# NIXOS-ADMIN: System diagnosis and configuration on NixOS
+# ─────────────────────────────────────────────────────────────
+[profile.nixos-admin]
+description = "NixOS system diagnosis and configuration"
+
+[profile.nixos-admin.filesystem]
+read_only = [
+    "/etc/nixos",
+    "/etc/hostname",
+    "/etc/hosts",
+    "/etc/os-release",
+    "/etc/machine-id",
+    "/etc/systemd",
+    "/etc/resolv.conf",
+    "/etc/ssl",
+    "/sys",
+    "/nix",
+    "/var/log",
+    "/run/current-system",
+]
+blocked = [
+    "~/.ssh",
+    "~/.gnupg",
+    "~/.aws",
+    "~/.config/gcloud",
+    "~/.docker",
+    "~/.kube/config",
+    "/etc/shadow",
+    "/etc/gshadow",
+    "/etc/security/opasswd",
+    "~/.local/share/keyrings",
+    "~/.mozilla",
+    "~/.config/chromium",
+    "~/.config/google-chrome",
+    "~/.password-store",
+    "~/.netrc",
+]
+writable = [
+]
+
+[profile.nixos-admin.network]
+allowed_domains = [
+    "api.anthropic.com",
+    "platform.claude.com",
+    "raw.githubusercontent.com",
+    "sentry.io",
+    "statsig.anthropic.com",
+]
+
+
+# ─────────────────────────────────────────────────────────────
+# DEV: Software development in a project directory
+# ─────────────────────────────────────────────────────────────
+[profile.dev]
+description = "Software development — project dir + system libs"
+
+[profile.dev.filesystem]
+read_only = [
+    "/nix",
+    "/usr",
+    "/lib",
+    "/etc/resolv.conf",
+    "/etc/ssl",
+    "/etc/hosts",
+    "~/.claude-config",
+]
+blocked = [
+    "~/.ssh",
+    "~/.gnupg",
+    "~/.aws",
+    "~/.config/gcloud",
+    "~/.docker",
+    "~/.kube/config",
+    "/etc/shadow",
+    "~/.local/share/keyrings",
+    "~/.mozilla",
+    "~/.config/chromium",
+    "~/.config/google-chrome",
+    "~/.password-store",
+    "~/.netrc",
+]
+writable = [
+    ".",
+]
+
+[profile.dev.network]
+allowed_domains = [
+    "api.anthropic.com",
+    "platform.claude.com",
+    "raw.githubusercontent.com",
+    "sentry.io",
+    "statsig.anthropic.com",
+    "registry.npmjs.org",
+    "pypi.org",
+    "files.pythonhosted.org",
+    "github.com",
+    "crates.io",
+    "index.crates.io",
+    "static.crates.io",
+]
+
+
+# ─────────────────────────────────────────────────────────────
+# STRICT: Maximum isolation for auditing untrusted repos
+# ─────────────────────────────────────────────────────────────
+[profile.strict]
+description = "Maximum isolation — for untrusted repos"
+
+[profile.strict.filesystem]
+read_only = [
+    "/nix/store",
+    "/usr/lib",
+    "/usr/bin",
+    "/bin",
+    "/lib",
+    "/etc/ssl",
+    "/etc/resolv.conf",
+]
+blocked = [
+    "~",
+]
+writable = [
+]
+
+[profile.strict.network]
+allowed_domains = [
+    "api.anthropic.com",
+    "platform.claude.com",
+    "sentry.io",
+    "statsig.anthropic.com",
+]
+
+
+# ─────────────────────────────────────────────────────────────
+# MACOS-ADMIN: macOS system diagnosis (Homebrew, launchd, etc.)
+# ─────────────────────────────────────────────────────────────
+[profile.macos-admin]
+description = "macOS system diagnosis and configuration"
+
+[profile.macos-admin.filesystem]
+read_only = [
+    "/Library",
+    "/System",
+    "/usr",
+    "/private/etc",
+    "/private/var/log",
+    "/opt/homebrew",
+    "/Applications",
+]
+blocked = [
+    "~/.ssh",
+    "~/.gnupg",
+    "~/.aws",
+    "~/.config/gcloud",
+    "~/.docker",
+    "~/Library/Keychains",
+    "~/Library/Cookies",
+    "~/Library/Application Support/Google/Chrome",
+    "~/Library/Application Support/Firefox",
+    "~/.netrc",
+    "~/.password-store",
+]
+writable = [
+]
+
+[profile.macos-admin.network]
+allowed_domains = [
+    "api.anthropic.com",
+    "sentry.io",
+    "statsig.anthropic.com",
+]
