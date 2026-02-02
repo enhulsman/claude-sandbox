@@ -6,7 +6,7 @@
 #
 # Usage:
 #   claude-sandbox --profile nixos-admin -- -p "bash /path/to/verify.sh"
-#   nix run .#verify            # standalone (tests outside sandbox too)
+#   nix run .#verify            # standalone on HOST (no sandbox — baseline comparison)
 
 set -euo pipefail
 
@@ -54,11 +54,11 @@ echo ""
 echo "── Filesystem Isolation ──────────────────────"
 
 # SSH keys
-if cat "$HOME/.ssh/id_rsa" 2>/dev/null || \
-   cat "$HOME/.ssh/id_ed25519" 2>/dev/null || \
-   cat "$HOME/.ssh/config" 2>/dev/null; then
+if cat "$HOME/.ssh/id_rsa" &>/dev/null || \
+   cat "$HOME/.ssh/id_ed25519" &>/dev/null || \
+   cat "$HOME/.ssh/config" &>/dev/null; then
   result FAIL "~/.ssh blocked" "can read SSH key files"
-elif ls "$HOME/.ssh/" 2>/dev/null | grep -q .; then
+elif ls "$HOME/.ssh/" &>/dev/null | grep -q .; then
   result FAIL "~/.ssh blocked" "can list SSH directory contents"
 else
   result PASS "~/.ssh blocked"
@@ -72,15 +72,15 @@ else
 fi
 
 # GPG keys
-if [[ -r "$HOME/.gnupg/private-keys-v1.d" ]] 2>/dev/null || \
-   ls "$HOME/.gnupg/" 2>/dev/null | grep -q .; then
+if [[ -r "$HOME/.gnupg/private-keys-v1.d" ]] &>/dev/null || \
+   ls "$HOME/.gnupg/" &>/dev/null | grep -q .; then
   result FAIL "~/.gnupg blocked" "can access GPG directory"
 else
   result PASS "~/.gnupg blocked"
 fi
 
 # AWS credentials
-if cat "$HOME/.aws/credentials" 2>/dev/null; then
+if cat "$HOME/.aws/credentials" &>/dev/null; then
   result FAIL "~/.aws blocked" "can read AWS credentials"
 else
   result PASS "~/.aws blocked"
@@ -88,8 +88,8 @@ fi
 
 # Workspace writable
 WORKSPACE="${CLAUDE_SANDBOX_WORKSPACE:-${_CS_WORKSPACE:-$HOME/claude-workspace}}"
-if mkdir -p "$WORKSPACE" 2>/dev/null && \
-   echo "verify-test-$$" > "$WORKSPACE/.verify-test" 2>/dev/null; then
+if mkdir -p "$WORKSPACE" &>/dev/null && \
+   echo "verify-test-$$" > "$WORKSPACE/.verify-test" &>/dev/null; then
   rm -f "$WORKSPACE/.verify-test"
   result PASS "Workspace writable ($WORKSPACE)"
 else
@@ -98,14 +98,14 @@ fi
 
 # System paths read-only (Linux only — on macOS, Seatbelt handles this)
 if [[ "$PLATFORM" == "linux" ]]; then
-  if touch /etc/.sandbox-write-test 2>/dev/null; then
+  if touch /etc/.sandbox-write-test &>/dev/null; then
     rm -f /etc/.sandbox-write-test
     result FAIL "/etc read-only" "can write to /etc"
   else
     result PASS "/etc read-only"
   fi
 
-  if touch /usr/.sandbox-write-test 2>/dev/null; then
+  if touch /usr/.sandbox-write-test &>/dev/null; then
     rm -f /usr/.sandbox-write-test
     result FAIL "/usr read-only" "can write to /usr"
   else
@@ -115,7 +115,7 @@ fi
 
 # Home directory write protection (outside workspace)
 TESTFILE="$HOME/.sandbox-write-test-$$"
-if echo "test" > "$TESTFILE" 2>/dev/null; then
+if echo "test" > "$TESTFILE" &>/dev/null; then
   rm -f "$TESTFILE"
   result WARN "Home dir write-protected" "can write to \$HOME (may be expected for 'dev' profile)"
 else
@@ -142,10 +142,10 @@ fi
 # Curl to non-allowed domain via proxy
 if curl -sf --connect-timeout 3 --max-time 5 \
      --proxy "${HTTP_PROXY:-${HTTPS_PROXY:-}}" \
-     https://example.com &>/dev/null 2>&1; then
+     https://example.com &>/dev/null; then
   result FAIL "Non-allowed domain blocked" "curl to example.com succeeded"
 elif curl -sf --connect-timeout 3 --max-time 5 \
-     https://example.com &>/dev/null 2>&1; then
+     https://example.com &>/dev/null; then
   result FAIL "Non-allowed domain blocked" "direct curl to example.com succeeded (no proxy?)"
 else
   result PASS "Non-allowed domain blocked"
@@ -156,7 +156,7 @@ fi
 # We test with --head and accept any HTTP response as success.
 if curl -sI --connect-timeout 5 --max-time 10 \
      --proxy "${HTTP_PROXY:-${HTTPS_PROXY:-}}" \
-     https://api.anthropic.com/ &>/dev/null 2>&1; then
+     https://api.anthropic.com/ &>/dev/null; then
   result PASS "Allowed domain reachable (api.anthropic.com)"
 else
   # Could be proxy not running or network issue — warn, don't fail
@@ -165,9 +165,9 @@ fi
 
 # DNS resolution of arbitrary domain
 if [[ "$PLATFORM" == "linux" ]]; then
-  if nslookup evil.example.com &>/dev/null 2>&1 || \
-     host evil.example.com &>/dev/null 2>&1 || \
-     dig evil.example.com &>/dev/null 2>&1; then
+  if nslookup evil.example.com &>/dev/null || \
+     host evil.example.com &>/dev/null || \
+     dig evil.example.com &>/dev/null; then
     result FAIL "DNS exfiltration blocked" "DNS lookup succeeded"
   else
     result PASS "DNS exfiltration blocked"

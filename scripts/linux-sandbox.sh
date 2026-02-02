@@ -26,7 +26,7 @@ readarray -t WRITABLE_PATHS  <<< "$_CS_WRITABLE_PATHS"
 #
 # Full chain:
 #   Claude Code → TCP 127.0.0.1:18080 (sandbox socat)
-#     → Unix /tmp/proxy.sock (bind-mounted into sandbox)
+#     → Unix /run/sandbox/proxy.sock (bind-mounted into sandbox)
 #     → TCP 127.0.0.1:$PROXY_PORT (host socat)
 #     → egress-proxy.py (HTTP CONNECT for HTTPS, or direct for HTTP)
 
@@ -53,6 +53,9 @@ if [[ -z "$SOCAT_BIN" ]]; then
   exit 1
 fi
 
+# ── Locate sleep binary (needed inside the sandbox on NixOS) ─
+SLEEP_BIN="$(command -v sleep)"
+
 # ── Resolve Claude binary ───────────────────────────────────
 CLAUDE_BIN_REAL="${_CS_CLAUDE_BIN_REAL:-$(readlink -f "$_CS_CLAUDE_BIN")}"
 
@@ -65,11 +68,29 @@ CLAUDE_BIN_REAL="${_CS_CLAUDE_BIN_REAL:-$(readlink -f "$_CS_CLAUDE_BIN")}"
 #   1. Brings up the loopback interface (allowed by CAP_NET_ADMIN in user ns)
 #   2. Starts socat to bridge TCP:18080 → Unix socket → host proxy
 #   3. Execs Claude Code
+
+# ── Resolve NixOS system path for sandbox PATH ───────────────
+# On NixOS, /run/current-system/sw/bin is a symlink to a /nix/store path.
+# Inside the sandbox /run is not mounted, so resolve it now to the real
+# store path (which IS accessible via --ro-bind /nix /nix).
+if [[ -d /run/current-system/sw/bin ]]; then
+  _CS_NIXOS_SYSTEM_PATH="$(readlink -f /run/current-system/sw/bin)"
+else
+  _CS_NIXOS_SYSTEM_PATH="/run/current-system/sw/bin"
+fi
+
 INTERNAL_PROXY_PORT=18080
-ENTRY_SCRIPT="$SOCKET_DIR/sandbox-entry.sh"
+ENTRY_SCRIPT="$SOCKET_DIR/entry.sh"
 cat > "$ENTRY_SCRIPT" <<ENTRY_EOF
 #!/bin/sh
 # --- Sandbox entry point (runs inside bubblewrap) ---
+
+# Set PATH here rather than via bwrap --setenv PATH, which triggers an
+# execvp ENOENT bug when PATH contains dirs absent from the sandbox
+# (e.g. /run/current-system/sw/bin on NixOS where /run is not mounted).
+# On NixOS, /run/current-system/sw/bin is a symlink into /nix/store —
+# resolve it at generation time so the real store path lands in PATH.
+export PATH="/usr/bin:/bin:/usr/local/bin:${HOME}/.local/bin:/nix/var/nix/profiles/default/bin:${_CS_NIXOS_SYSTEM_PATH}"
 
 # 1. Bring up loopback interface in the network namespace
 #    bwrap's --unshare-net creates a net ns with lo DOWN.
@@ -79,11 +100,11 @@ if ! /usr/sbin/ip link set lo up 2>/dev/null; then
 fi
 
 # 2. Start TCP→Unix bridge so Claude Code can reach the proxy
-#    This listens on 127.0.0.1:18080 and forwards to /tmp/proxy.sock
-$SOCAT_BIN TCP-LISTEN:$INTERNAL_PROXY_PORT,bind=127.0.0.1,fork,reuseaddr UNIX-CONNECT:/tmp/proxy.sock &
+#    This listens on 127.0.0.1:18080 and forwards to /run/sandbox/proxy.sock
+$SOCAT_BIN TCP-LISTEN:$INTERNAL_PROXY_PORT,bind=127.0.0.1,fork,reuseaddr UNIX-CONNECT:/run/sandbox/proxy.sock &
 
 # Give the bridge a moment to start
-sleep 0.3
+$SLEEP_BIN 0.3
 
 # 3. Exec Claude Code with all arguments
 exec $CLAUDE_BIN_REAL "\$@"
@@ -93,6 +114,7 @@ chmod +x "$ENTRY_SCRIPT"
 # ── Build bwrap argument list ─────────────────────────────────
 
 BWRAP_ARGS=()
+BASE_MOUNTS=()
 
 # --- Base filesystem ---
 # Modern distros (Debian Bookworm, Fedora 34+, Ubuntu 24+) use "usr-merge":
@@ -108,17 +130,18 @@ BWRAP_ARGS=()
 if [[ -L /lib ]]; then
   # ── usr-merged system (Debian Bookworm, Raspberry Pi OS, etc.) ──
   BWRAP_ARGS+=(--ro-bind /usr /usr)
-  [[ -L /bin ]]   && BWRAP_ARGS+=(--symlink usr/bin /bin)
-  [[ -L /sbin ]]  && BWRAP_ARGS+=(--symlink usr/sbin /sbin)
-  [[ -L /lib ]]   && BWRAP_ARGS+=(--symlink usr/lib /lib)
-  [[ -L /lib64 ]] && BWRAP_ARGS+=(--symlink usr/lib64 /lib64)
-  [[ -d /lib64 ]] && [[ ! -L /lib64 ]] && BWRAP_ARGS+=(--ro-bind /lib64 /lib64)
+  BASE_MOUNTS+=(/usr)
+  [[ -L /bin ]]   && BWRAP_ARGS+=(--symlink usr/bin /bin)   && BASE_MOUNTS+=(/bin)
+  [[ -L /sbin ]]  && BWRAP_ARGS+=(--symlink usr/sbin /sbin) && BASE_MOUNTS+=(/sbin)
+  [[ -L /lib ]]   && BWRAP_ARGS+=(--symlink usr/lib /lib)   && BASE_MOUNTS+=(/lib)
+  [[ -L /lib64 ]] && BWRAP_ARGS+=(--symlink usr/lib64 /lib64) && BASE_MOUNTS+=(/lib64)
+  [[ -d /lib64 ]] && [[ ! -L /lib64 ]] && BWRAP_ARGS+=(--ro-bind /lib64 /lib64) && BASE_MOUNTS+=(/lib64)
 else
   # ── Traditional layout (NixOS, older distros) ──
   for base in /usr /bin /lib /sbin; do
-    [[ -e "$base" ]] && BWRAP_ARGS+=(--ro-bind "$base" "$base")
+    [[ -e "$base" ]] && BWRAP_ARGS+=(--ro-bind "$base" "$base") && BASE_MOUNTS+=("$base")
   done
-  [[ -e /lib64 ]] && BWRAP_ARGS+=(--ro-bind /lib64 /lib64)
+  [[ -e /lib64 ]] && BWRAP_ARGS+=(--ro-bind /lib64 /lib64) && BASE_MOUNTS+=(/lib64)
 fi
 
 # Dynamic linker config
@@ -129,10 +152,10 @@ done
 # /etc — mount entire directory read-only for system config (resolv.conf,
 # ssl certs, passwd, hostname, etc). Blocked paths (e.g. /etc/shadow)
 # override this later with --ro-bind /dev/null.
-[[ -d /etc ]] && BWRAP_ARGS+=(--ro-bind /etc /etc)
+[[ -d /etc ]] && BWRAP_ARGS+=(--ro-bind /etc /etc) && BASE_MOUNTS+=(/etc)
 
 # Nix store
-[[ -d /nix ]] && BWRAP_ARGS+=(--ro-bind /nix /nix)
+[[ -d /nix ]] && BWRAP_ARGS+=(--ro-bind /nix /nix) && BASE_MOUNTS+=(/nix)
 
 # /proc, /dev, ephemeral /tmp
 BWRAP_ARGS+=(
@@ -140,15 +163,21 @@ BWRAP_ARGS+=(
   --dev  /dev
   --tmpfs /tmp
 )
+BASE_MOUNTS+=(/proc /dev /tmp)
 
 # --- Profile: read-only mounts ---
-# Skip paths already handled by base mounts to prevent conflicts
-# (e.g., re-mounting /lib destroys the usr-merge symlink).
+# Skip paths that are already covered by base mounts (exact match or sub-path).
+# These are redundant, and on NixOS re-mounting symlinks (like /etc/hosts)
+# inside a read-only bind mount causes bwrap to fail.
 for path in "${READ_ONLY_PATHS[@]}"; do
   [[ -z "$path" ]] && continue
-  case "$path" in
-    /usr|/bin|/lib|/lib64|/sbin|/etc|/nix|/proc|/dev|/tmp) continue ;;
-  esac
+  skip=0
+  for base in "${BASE_MOUNTS[@]}"; do
+    if [[ "$path" == "$base" || "$path" == "$base"/* ]]; then
+      skip=1; break
+    fi
+  done
+  [[ "$skip" -eq 1 ]] && continue
   [[ -e "$path" ]] && BWRAP_ARGS+=(--ro-bind "$path" "$path")
 done
 
@@ -220,14 +249,16 @@ CLAUDE_JSON="${HOME}/.claude.json"
 # Without it, interactive mode can't identify the user and shows the login screen.
 [[ -f "$CLAUDE_JSON" ]]       && BWRAP_ARGS+=(--bind "$CLAUDE_JSON" "$CLAUDE_JSON")
 
-# Workspace
-BWRAP_ARGS+=(--bind "$_CS_WORKSPACE" "$_CS_WORKSPACE")
+# Workspace — mounted by the writable paths loop above (via profile config).
+# The launcher (claude-sandbox.sh) always injects $_CS_WORKSPACE into
+# _CS_WRITABLE_PATHS, so it's guaranteed to be covered.
 
 # --- Network isolation + proxy bridge ---
+# Mount the socket directory as a whole rather than individual files.
+# bwrap --ro-bind of individual files fails on some systems (e.g. NixOS).
 BWRAP_ARGS+=(
   --unshare-net
-  --ro-bind "$SOCKET_PATH" /tmp/proxy.sock
-  --ro-bind "$ENTRY_SCRIPT" /tmp/sandbox-entry.sh
+  --ro-bind "$SOCKET_DIR" /run/sandbox
 )
 
 # --- Environment ---
@@ -236,7 +267,6 @@ BWRAP_ARGS+=(
   --setenv USER   "${USER:-claude}"
   --setenv LANG   "${LANG:-C.UTF-8}"
   --setenv TERM   "${TERM:-xterm-256color}"
-  --setenv PATH   "/usr/bin:/bin:/usr/local/bin:${HOME}/.local/bin:/nix/var/nix/profiles/default/bin:/run/current-system/sw/bin"
   --setenv TMPDIR "/tmp"
 
   # Standard HTTP proxy format — Claude Code sends CONNECT for HTTPS
@@ -252,7 +282,7 @@ BWRAP_ARGS+=(
 # The entry script brings up loopback, starts the TCP→Unix bridge,
 # then execs Claude Code. This is needed because --unshare-net kills
 # all networking, and we need loopback for the HTTP proxy.
-BWRAP_ARGS+=(-- /tmp/sandbox-entry.sh)
+BWRAP_ARGS+=(-- /run/sandbox/entry.sh)
 
 echo "  Launching Claude Code in bubblewrap sandbox..."
 
