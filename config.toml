@@ -52,6 +52,12 @@ blocked = [
     "~/.config/google-chrome",
     "~/.password-store",
     "~/.netrc",
+    # Git credentials
+    "~/.gitconfig",
+    "~/.config/git",
+    "~/.git-credentials",
+    "~/.cache/git",
+    "~/.config/gh",
 ]
 writable = [
 ]
@@ -63,6 +69,7 @@ allowed_domains = [
     "raw.githubusercontent.com",
     "sentry.io",
     "statsig.anthropic.com",
+    "docs.claude.com",
 ]
 
 
@@ -96,6 +103,14 @@ blocked = [
     "~/.config/google-chrome",
     "~/.password-store",
     "~/.netrc",
+    # Git credentials
+    "~/.gitconfig",
+    "~/.config/git",
+    "~/.git-credentials",
+    "~/.cache/git",
+    "~/.config/gh",
+    # macOS Keychain (harmless on Linux)
+    "~/Library/Keychains",
 ]
 writable = [
     ".",
@@ -115,6 +130,7 @@ allowed_domains = [
     "crates.io",
     "index.crates.io",
     "static.crates.io",
+    "docs.claude.com",
 ]
 
 
@@ -177,6 +193,12 @@ blocked = [
     "~/Library/Application Support/Firefox",
     "~/.netrc",
     "~/.password-store",
+    # Git credentials
+    "~/.gitconfig",
+    "~/.config/git",
+    "~/.git-credentials",
+    "~/.cache/git",
+    "~/.config/gh",
 ]
 writable = [
 ]
