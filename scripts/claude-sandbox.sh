@@ -1064,10 +1064,11 @@ echo "  Proxy: port $PROXY_PORT (PID $PROXY_PID)"
 echo ""
 
 if [[ "${CLAUDE_SANDBOX_IS_LINUX:-0}" == "1" ]]; then
-  exec bash "$SCRIPTS_DIR/linux-sandbox.sh" "${CLAUDE_ARGS[@]}"
+  bash "$SCRIPTS_DIR/linux-sandbox.sh" "${CLAUDE_ARGS[@]}"
 elif [[ "${CLAUDE_SANDBOX_IS_DARWIN:-0}" == "1" ]]; then
-  exec bash "$SCRIPTS_DIR/macos-sandbox.sh" "${CLAUDE_ARGS[@]}"
+  bash "$SCRIPTS_DIR/macos-sandbox.sh" "${CLAUDE_ARGS[@]}"
 else
   echo "ERROR: Unsupported platform. Set CLAUDE_SANDBOX_IS_LINUX=1 or CLAUDE_SANDBOX_IS_DARWIN=1." >&2
   exit 1
 fi
+# cleanup() runs via EXIT trap after sandbox exits
