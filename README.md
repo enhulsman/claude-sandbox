@@ -179,41 +179,51 @@ Priority (highest to lowest): CLI flags > environment variables > defaults file 
 
 Override the defaults file path with `CLAUDE_SANDBOX_DEFAULTS`.
 
-### Headless Authentication (Raspberry Pi, SSH)
+### Headless Authentication (VPS, SSH)
 
-Claude Code's default login requires a browser. On headless systems, create a token file:
+Claude Code's login requires a browser, which doesn't work on headless systems. The easiest solution is to copy credentials from a machine where you've already logged in.
+
+**Option 1: Copy credentials (recommended)**
 
 ```bash
-# Create token file
-cat > ~/.claude-sandbox-token <<'EOF'
-# Option 1: API key (pay-as-you-go billing)
-export ANTHROPIC_API_KEY="sk-ant-api03-..."
+# On the headless machine, create the config directory:
+mkdir -p ~/.claude
+chmod 700 ~/.claude
 
-# Option 2: OAuth token (uses subscription) - also requires ~/.claude.json setup
-# export CLAUDE_CODE_OAUTH_TOKEN="sk-ant-oat01-..."
-EOF
-
-# Secure it
-chmod 600 ~/.claude-sandbox-token
+# On your desktop/laptop (where Claude Code works):
+scp ~/.claude/.credentials.json headless:~/.claude/
+scp ~/.claude.json headless:~/
 ```
 
-The sandbox automatically sources this file when it exists.
+This copies your OAuth tokens and account binding. The sandbox mounts these files automatically.
 
-**Alternative: SSH port forwarding for OAuth login:**
+**Option 2: SSH port forwarding**
+
+Complete OAuth login on the headless machine by forwarding the callback port:
+
 ```bash
 # On your local machine:
-ssh -L 8080:localhost:8080 user@pi
+ssh -L 8080:localhost:8080 user@headless
 
-# On the Pi (in the SSH session):
+# On the headless machine (in the SSH session):
 claude /login
 # Copy the URL and open it in your LOCAL browser
 ```
 
-Override the token file path via environment or defaults file:
+**Option 3: Token file (API key fallback)**
+
+If you have an API key (pay-as-you-go billing), create a token file:
+
+```bash
+cat > ~/.claude-sandbox-token <<'EOF'
+export ANTHROPIC_API_KEY="sk-ant-api03-..."
+EOF
+chmod 600 ~/.claude-sandbox-token
+```
+
+The sandbox automatically sources `~/.claude-sandbox-token` when it exists. Override the path:
 ```bash
 export CLAUDE_SANDBOX_TOKEN_FILE=~/.config/claude-sandbox/token
-# Or in ~/.config/claude-sandbox/defaults:
-CLAUDE_SANDBOX_TOKEN_FILE=~/.config/claude-sandbox/token
 ```
 
 ### Updating Claude Code
