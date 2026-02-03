@@ -179,6 +179,43 @@ Priority (highest to lowest): CLI flags > environment variables > defaults file 
 
 Override the defaults file path with `CLAUDE_SANDBOX_DEFAULTS`.
 
+### Headless Authentication (Raspberry Pi, SSH)
+
+Claude Code's default login requires a browser. On headless systems, create a token file:
+
+```bash
+# Create token file
+cat > ~/.claude-sandbox-token <<'EOF'
+# Option 1: API key (pay-as-you-go billing)
+export ANTHROPIC_API_KEY="sk-ant-api03-..."
+
+# Option 2: OAuth token (uses subscription) - also requires ~/.claude.json setup
+# export CLAUDE_CODE_OAUTH_TOKEN="sk-ant-oat01-..."
+EOF
+
+# Secure it
+chmod 600 ~/.claude-sandbox-token
+```
+
+The sandbox automatically sources this file when it exists.
+
+**Alternative: SSH port forwarding for OAuth login:**
+```bash
+# On your local machine:
+ssh -L 8080:localhost:8080 user@pi
+
+# On the Pi (in the SSH session):
+claude /login
+# Copy the URL and open it in your LOCAL browser
+```
+
+Override the token file path via environment or defaults file:
+```bash
+export CLAUDE_SANDBOX_TOKEN_FILE=~/.config/claude-sandbox/token
+# Or in ~/.config/claude-sandbox/defaults:
+CLAUDE_SANDBOX_TOKEN_FILE=~/.config/claude-sandbox/token
+```
+
 ### Updating Claude Code
 
 Claude Code is bundled via [claude-code-nix](https://github.com/sadjow/claude-code-nix) (updated hourly). To get the latest version:

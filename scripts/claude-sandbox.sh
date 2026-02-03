@@ -25,7 +25,7 @@ PROXY_BIN="${CLAUDE_SANDBOX_PROXY:-claude-egress-proxy}"
 # ── Load Defaults File ──────────────────────────────────────
 # Priority: CLI flags > env vars > defaults file > hardcoded defaults
 # Recognized keys: CLAUDE_SANDBOX_PROFILE, CLAUDE_SANDBOX_WORKSPACE,
-#                  CLAUDE_SANDBOX_YOLO
+#                  CLAUDE_SANDBOX_YOLO, CLAUDE_SANDBOX_TOKEN_FILE
 _CS_DEFAULTS_FILE="${CLAUDE_SANDBOX_DEFAULTS:-${XDG_CONFIG_HOME:-$HOME/.config}/claude-sandbox/defaults}"
 _CS_DEFAULT_YOLO=""
 
@@ -52,8 +52,25 @@ if [[ -f "$_CS_DEFAULTS_FILE" ]]; then
         WORKSPACE="${CLAUDE_SANDBOX_WORKSPACE:-$_val}" ;;
       CLAUDE_SANDBOX_YOLO)
         _CS_DEFAULT_YOLO="$_val" ;;
+      CLAUDE_SANDBOX_TOKEN_FILE)
+        _CS_TOKEN_FILE="${CLAUDE_SANDBOX_TOKEN_FILE:-$_val}" ;;
     esac
   done < "$_CS_DEFAULTS_FILE"
+fi
+
+# ── Load Token File ────────────────────────────────────────────
+# Automatically source a token file for headless/Pi authentication.
+# Supports ANTHROPIC_API_KEY or CLAUDE_CODE_OAUTH_TOKEN exports.
+_CS_TOKEN_FILE="${CLAUDE_SANDBOX_TOKEN_FILE:-${_CS_TOKEN_FILE:-$HOME/.claude-sandbox-token}}"
+
+if [[ -f "$_CS_TOKEN_FILE" ]]; then
+  # Security: warn if loose permissions (600 = owner read/write only)
+  _perms=$(stat -c %a "$_CS_TOKEN_FILE" 2>/dev/null || stat -f %Lp "$_CS_TOKEN_FILE" 2>/dev/null)
+  if [[ "$_perms" != "600" ]]; then
+    echo "WARNING: $_CS_TOKEN_FILE has loose permissions ($_perms). Run: chmod 600 '$_CS_TOKEN_FILE'" >&2
+  fi
+  # shellcheck source=/dev/null
+  source "$_CS_TOKEN_FILE"
 fi
 
 PROXY_PORT=""
