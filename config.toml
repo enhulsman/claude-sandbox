@@ -35,6 +35,9 @@ read_only = [
     "/nix",
     "/var/log",
     "/run/current-system",
+    # Git config (metadata only, not credentials)
+    "~/.gitconfig",
+    "~/.config/git",
 ]
 blocked = [
     "~/.ssh",
@@ -52,9 +55,7 @@ blocked = [
     "~/.config/google-chrome",
     "~/.password-store",
     "~/.netrc",
-    # Git credentials
-    "~/.gitconfig",
-    "~/.config/git",
+    # Git credential stores
     "~/.git-credentials",
     "~/.cache/git",
     "~/.config/gh",
@@ -88,6 +89,9 @@ read_only = [
     "/etc/ssl",
     "/etc/hosts",
     "~/.claude-config",
+    # Git config (metadata only, not credentials)
+    "~/.gitconfig",
+    "~/.config/git",
 ]
 blocked = [
     "~/.ssh",
@@ -103,9 +107,7 @@ blocked = [
     "~/.config/google-chrome",
     "~/.password-store",
     "~/.netrc",
-    # Git credentials
-    "~/.gitconfig",
-    "~/.config/git",
+    # Git credential stores
     "~/.git-credentials",
     "~/.cache/git",
     "~/.config/gh",
@@ -180,6 +182,9 @@ read_only = [
     "/private/var/log",
     "/opt/homebrew",
     "/Applications",
+    # Git config (metadata only, not credentials)
+    "~/.gitconfig",
+    "~/.config/git",
 ]
 blocked = [
     "~/.ssh",
@@ -193,9 +198,7 @@ blocked = [
     "~/Library/Application Support/Firefox",
     "~/.netrc",
     "~/.password-store",
-    # Git credentials
-    "~/.gitconfig",
-    "~/.config/git",
+    # Git credential stores
     "~/.git-credentials",
     "~/.cache/git",
     "~/.config/gh",

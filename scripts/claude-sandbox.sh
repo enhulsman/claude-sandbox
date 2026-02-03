@@ -820,6 +820,10 @@ If git operations fail, explain this to the user and suggest:
 
 Do NOT suggest workarounds involving SSH keys or credential files.
 
+Note: Git configuration (~/.gitconfig) is readable for normal operations, but
+credential stores (~/.git-credentials, ~/.config/gh) are blocked. If your gitconfig
+contains inline credentials in URLs, consider removing them before using the sandbox.
+
 ## Handling Restrictions
 
 When you encounter a "Permission denied", "No such file", or
