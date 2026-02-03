@@ -16,6 +16,7 @@ Supports:
 
 import argparse
 import http.server
+import json
 import os
 import select
 import socket
@@ -32,9 +33,10 @@ from datetime import datetime, timezone
 # ══════════════════════════════════════════════════════════════
 
 class ProxyConfig:
-    def __init__(self, allowed_domains, audit_log_path):
+    def __init__(self, allowed_domains, audit_log_path, json_audit=False):
         self.allowed_domains = set(d.lower().strip(".") for d in allowed_domains)
         self.audit_log_path = audit_log_path
+        self.json_audit = json_audit
         self._audit_file = None
         self._lock = threading.Lock()
 
@@ -49,7 +51,29 @@ class ProxyConfig:
     def audit(self, method, host, result):
         """Thread-safe audit logging."""
         ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-        line = f"{ts} {result:7s} {method:7s} {host}\n"
+
+        # Parse host:port if present
+        if ":" in host:
+            hostname, port_str = host.rsplit(":", 1)
+            try:
+                port = int(port_str)
+            except ValueError:
+                hostname, port = host, None
+        else:
+            hostname, port = host, None
+
+        if self.json_audit:
+            entry = {
+                "ts": ts,
+                "result": result,
+                "method": method,
+                "host": hostname,
+            }
+            if port is not None:
+                entry["port"] = port
+            line = json.dumps(entry, separators=(",", ":")) + "\n"
+        else:
+            line = f"{ts} {result:7s} {method:7s} {host}\n"
 
         with self._lock:
             if self._audit_file is None and self.audit_log_path:
@@ -311,6 +335,10 @@ def main():
         "--audit-log", default="",
         help="Path to audit log file"
     )
+    parser.add_argument(
+        "--json-audit", action="store_true",
+        help="Output audit log in JSON-lines format (default: text)"
+    )
     args = parser.parse_args()
 
     if not args.allow:
@@ -320,7 +348,7 @@ def main():
             file=sys.stderr,
         )
 
-    config = ProxyConfig(args.allow, args.audit_log)
+    config = ProxyConfig(args.allow, args.audit_log, args.json_audit)
 
     # Start HTTP/CONNECT proxy
     http_server = ThreadedHTTPProxy(

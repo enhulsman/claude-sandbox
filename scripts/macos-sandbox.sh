@@ -8,6 +8,8 @@
 #   _CS_PROXY_PORT        — TCP port of the egress proxy
 #   _CS_WORKSPACE         — workspace directory path
 #   _CS_CLAUDE_BIN        — path to the claude binary
+#   _CS_SESSION_ID        — unique session identifier
+#   _CS_SESSION_DIR       — session directory for logs and context
 #   CLAUDE_SANDBOX_SCRIPTS — path to the scripts directory
 
 set -euo pipefail

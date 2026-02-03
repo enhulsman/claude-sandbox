@@ -9,7 +9,9 @@
 #   _CS_WORKSPACE         — workspace directory path
 #   _CS_CLAUDE_BIN        — path to the claude binary (may be a symlink)
 #   _CS_CLAUDE_BIN_REAL   — resolved real path of the binary
-#   _CS_AUDIT_LOG         — path to audit log
+#   _CS_AUDIT_LOG         — path to audit log (in session directory)
+#   _CS_SESSION_ID        — unique session identifier
+#   _CS_SESSION_DIR       — session directory for logs and context
 
 set -euo pipefail
 

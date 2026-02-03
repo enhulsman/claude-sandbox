@@ -75,6 +75,8 @@ Options:
   --shell             Shortcut for --exec bash (interactive shell in sandbox)
   --yolo              Pass --dangerously-skip-permissions to Claude Code
                       (safe when using the external sandbox as the boundary)
+  --skip-git-check    Skip uncommitted changes check (dev profile only)
+  --clean-sessions N  Remove session directories older than N days (default: 30)
   --dry-run           Show what would be done without executing
   -h, --help          Show this help
 
@@ -91,6 +93,7 @@ Examples:
   claude-sandbox --profile dev --shell                      # same as above
   claude-sandbox --profile dev --exec bash verify.sh        # run a script
   claude-sandbox --profile strict -- -p "audit this repo"
+  claude-sandbox --clean-sessions 7                         # cleanup old sessions
 EOF
   exit 0
 }
@@ -100,6 +103,8 @@ CLAUDE_ARGS=()
 EXEC_CMD=()
 DRY_RUN=0
 YOLO=0
+SKIP_GIT_CHECK=0
+CLEAN_SESSIONS=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -108,6 +113,15 @@ while [[ $# -gt 0 ]]; do
     --config)    CONFIG_FILE="$2"; shift 2 ;;
     --dry-run)   DRY_RUN=1; shift ;;
     --yolo)      YOLO=1; shift ;;
+    --skip-git-check) SKIP_GIT_CHECK=1; shift ;;
+    --clean-sessions)
+      # Accept optional numeric argument
+      if [[ "${2:-}" =~ ^[0-9]+$ ]]; then
+        CLEAN_SESSIONS="$2"; shift 2
+      else
+        CLEAN_SESSIONS="30"; shift
+      fi
+      ;;
     --shell)     EXEC_CMD=("bash"); break ;;
     --exec)      shift; EXEC_CMD=("$@"); break ;;
     -h|--help)   usage ;;
@@ -121,9 +135,200 @@ if [[ "$YOLO" == "0" && "$_CS_DEFAULT_YOLO" == "1" ]]; then
   YOLO=1
 fi
 
-# ── Setup Workspace ───────────────────────────────────────────
+# ── Session Cleanup Command ───────────────────────────────────
+clean_old_sessions() {
+  local days="${1:-30}"
+  local sessions_dir="$WORKSPACE/.sessions"
+  [[ -d "$sessions_dir" ]] || { echo "No sessions directory found."; return 0; }
+
+  # SECURITY: Sanity check path to prevent deletion of unintended directories
+  if [[ ! "$sessions_dir" =~ ^$HOME/[^/]+/\.sessions$ && ! "$sessions_dir" =~ ^$HOME/claude-workspace/\.sessions$ ]]; then
+    echo "ERROR: Sessions directory outside expected path: $sessions_dir" >&2
+    return 1
+  fi
+
+  echo "Cleaning sessions older than $days days from $sessions_dir..."
+  local count=0
+  while IFS= read -r -d '' dir; do
+    rm -rf "$dir"
+    ((count++)) || true
+  done < <(find "$sessions_dir" -maxdepth 1 -type d -name "[0-9]*-[0-9]*" -mtime "+$days" -print0 2>/dev/null)
+  echo "Removed $count old session(s)."
+}
+
+# Handle --clean-sessions if specified
+if [[ -n "$CLEAN_SESSIONS" ]]; then
+  mkdir -p "$WORKSPACE"
+  clean_old_sessions "$CLEAN_SESSIONS"
+  exit 0
+fi
+
+# ── Pre-Session Git Check (Dev Profile Only) ──────────────────
+check_git_status() {
+  local cwd="$1"
+
+  # Only for dev profile
+  [[ "$PROFILE" != "dev" ]] && return 0
+
+  # Skip if flag set
+  [[ "$SKIP_GIT_CHECK" == "1" ]] && return 0
+
+  # Skip if non-interactive (no tty on stdin)
+  if [[ ! -t 0 ]]; then
+    echo "Non-interactive mode: skipping git check" >&2
+    return 0
+  fi
+
+  # Check if git is available
+  if ! command -v git &>/dev/null; then
+    return 0
+  fi
+
+  # Skip if not a git repo
+  if ! git -C "$cwd" rev-parse --git-dir &>/dev/null 2>&1; then
+    return 0
+  fi
+
+  # Check for changes
+  local status
+  status=$(git -C "$cwd" status --porcelain 2>/dev/null)
+  [[ -z "$status" ]] && return 0
+
+  # Check for merge/rebase in progress
+  local merge_in_progress=0
+  if [[ -d "$cwd/.git/rebase-merge" ]] || [[ -d "$cwd/.git/rebase-apply" ]] || \
+     [[ -f "$cwd/.git/MERGE_HEAD" ]]; then
+    merge_in_progress=1
+  fi
+
+  # Check for detached HEAD
+  local detached_head=0
+  if ! git -C "$cwd" symbolic-ref -q HEAD &>/dev/null; then
+    detached_head=1
+  fi
+
+  # Show warning and options
+  echo ""
+  echo "┌──────────────────────────────────────────────────────────────┐"
+  echo "│  Uncommitted changes detected in $cwd"
+  echo "│"
+  git -C "$cwd" status --porcelain 2>/dev/null | head -10 | while read -r line; do
+    printf "│     %s\n" "$line"
+  done
+  local total
+  total=$(echo "$status" | wc -l)
+  [[ $total -gt 10 ]] && echo "│     ... and $((total-10)) more"
+  echo "│"
+
+  if [[ "$merge_in_progress" == "1" ]]; then
+    echo "│  NOTE: Merge/rebase in progress. Auto-commit disabled."
+    echo "│"
+    echo "│  [1] Pause - I'll resolve manually (then press Enter)"
+    echo "│  [3] Continue without committing"
+    echo "│  [4] Abort"
+  elif [[ "$detached_head" == "1" ]]; then
+    echo "│  NOTE: Detached HEAD. Auto-commit may be lost."
+    echo "│"
+    echo "│  [1] Pause - I'll commit manually (then press Enter)"
+    echo "│  [2] Auto-commit: \"pre-claude-$(date +%Y%m%d-%H%M%S)\""
+    echo "│  [3] Continue without committing"
+    echo "│  [4] Abort"
+  else
+    echo "│  [1] Pause - I'll commit manually (then press Enter)"
+    echo "│  [2] Auto-commit: \"pre-claude-$(date +%Y%m%d-%H%M%S)\""
+    echo "│  [3] Continue without committing"
+    echo "│  [4] Abort"
+  fi
+  echo "│"
+  echo "└──────────────────────────────────────────────────────────────┘"
+
+  local choice
+  # 30s timeout to prevent indefinite hang
+  if ! read -t 30 -rp "  Choice [1-4]: " choice; then
+    echo ""
+    echo "Timeout. Continuing without commit."
+    return 0
+  fi
+
+  case "$choice" in
+    1)
+      echo "Paused. Commit your changes, then press Enter..."
+      read -r
+      # Re-check after user commits
+      status=$(git -C "$cwd" status --porcelain 2>/dev/null)
+      if [[ -n "$status" ]]; then
+        echo "Still uncommitted changes. Continuing anyway."
+      else
+        echo "Clean. Continuing."
+      fi
+      ;;
+    2)
+      if [[ "$merge_in_progress" == "1" ]]; then
+        echo "Auto-commit not available during merge/rebase."
+        return 0
+      fi
+      echo ""
+      echo "WARNING: This runs git hooks from the repository with your user privileges."
+      read -rp "  Proceed? [y/N]: " confirm
+      if [[ "$confirm" =~ ^[Yy]$ ]]; then
+        local commit_msg="pre-claude-$(date +%Y%m%d-%H%M%S)"
+        if git -C "$cwd" add -A && git -C "$cwd" commit -m "$commit_msg"; then
+          echo "Committed as '$commit_msg'. Continuing."
+        else
+          echo "Commit failed. Continuing without commit."
+        fi
+      else
+        echo "Skipped. Continuing without commit."
+      fi
+      ;;
+    3)
+      echo "Continuing without commit."
+      ;;
+    4)
+      echo "Aborted."
+      exit 0
+      ;;
+    *)
+      echo "Invalid choice. Aborting."
+      exit 1
+      ;;
+  esac
+}
+
+# ── Setup Workspace and Session Directory ─────────────────────
 mkdir -p "$WORKSPACE"
-AUDIT_LOG="$WORKSPACE/.proxy-audit.log"
+
+# Create per-session directory for logs and context
+SESSION_ID="$(date +%Y%m%d-%H%M%S)-$$"
+
+# SECURITY: Validate session ID format to prevent path traversal
+if [[ ! "$SESSION_ID" =~ ^[a-zA-Z0-9-]+$ ]]; then
+  echo "ERROR: Invalid session ID format: $SESSION_ID" >&2
+  exit 1
+fi
+
+SESSION_DIR="$WORKSPACE/.sessions/$SESSION_ID"
+mkdir -p "$SESSION_DIR"
+
+# Create/update 'current' symlink (note: race condition with concurrent sessions)
+ln -sfn "$SESSION_ID" "$WORKSPACE/.sessions/current"
+
+# Session-specific paths
+AUDIT_LOG="$SESSION_DIR/proxy-audit.log"
+PROXY_LOG="$SESSION_DIR/proxy.log"
+SANDBOX_CONTEXT_FILE="$SESSION_DIR/sandbox-context.md"
+
+# Backward compatibility: symlink at old location for tools expecting it
+ln -sf "$AUDIT_LOG" "$WORKSPACE/.proxy-audit.log" 2>/dev/null || true
+
+# Record session start time for duration calculation
+START_TIME=$(date +%s)
+START_TIME_ISO=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+
+# Export session info for sub-scripts
+export _CS_SESSION_ID="$SESSION_ID"
+export _CS_SESSION_DIR="$SESSION_DIR"
+export _CS_START_TIME="$START_TIME"
 
 # ── TOML Profile Parser ──────────────────────────────────────
 # Minimal parser: extracts string arrays from [profile.NAME.section] key = [...]
@@ -239,13 +444,19 @@ export _CS_ALLOWED_DOMAINS
 _CS_ALLOWED_DOMAINS="$(printf '%s\n' "${ALLOWED_DOMAINS[@]}")"
 export _CS_WORKSPACE="$WORKSPACE"
 export _CS_AUDIT_LOG="$AUDIT_LOG"
+export _CS_SESSION_ID
+export _CS_SESSION_DIR
+
+# ── Run Pre-Session Git Check ─────────────────────────────────
+# Only runs for dev profile with uncommitted changes, prompts user for action
+check_git_status "$(pwd)"
 
 # ── Generate Sandbox Context for Claude Code ─────────────────
 # Creates a system prompt addendum so Claude Code understands it's running
 # in a sandbox and can handle restrictions gracefully instead of getting
 # confused by missing files or blocked network requests.
 # Uses --append-system-prompt-file to inject without touching user files.
-SANDBOX_CONTEXT_FILE="$WORKSPACE/.sandbox-context.md"
+# SANDBOX_CONTEXT_FILE is set earlier in session directory setup.
 if [[ ${#EXEC_CMD[@]} -eq 0 ]]; then
   cat > "$SANDBOX_CONTEXT_FILE" <<CONTEXT_EOF
 # Sandbox Environment
@@ -340,7 +551,7 @@ start_proxy() {
 
   # Redirect proxy output to log file to avoid polluting Claude Code's TUI.
   # Startup messages go to a separate log; audit entries go to AUDIT_LOG.
-  PROXY_LOG="$WORKSPACE/.proxy.log"
+  # PROXY_LOG is set earlier in session directory setup.
 
   "$PROXY_BIN" \
     --port "$PROXY_PORT" \
@@ -373,32 +584,148 @@ start_proxy() {
   fi
 }
 
+# ── Format Duration ───────────────────────────────────────────
+format_duration() {
+  local seconds=$1
+  local hours=$((seconds / 3600))
+  local minutes=$(((seconds % 3600) / 60))
+  local secs=$((seconds % 60))
+
+  if [[ $hours -gt 0 ]]; then
+    printf "%dh %dm %ds" "$hours" "$minutes" "$secs"
+  elif [[ $minutes -gt 0 ]]; then
+    printf "%dm %ds" "$minutes" "$secs"
+  else
+    printf "%ds" "$secs"
+  fi
+}
+
 # ── Cleanup ───────────────────────────────────────────────────
 cleanup() {
   local exit_code=$?
+  local end_time=$(date +%s)
+  local duration=$((end_time - START_TIME))
 
   [[ -n "${PROXY_PID:-}" ]]  && kill "$PROXY_PID" 2>/dev/null || true
   [[ -n "${SOCAT_PID:-}" ]]  && kill "$SOCAT_PID" 2>/dev/null || true
   [[ -n "${SOCKET_DIR:-}" ]] && rm -rf "$SOCKET_DIR" 2>/dev/null || true
   wait 2>/dev/null || true
 
-  # Session summary
+  # Generate session report and display summary
   if [[ -f "$AUDIT_LOG" ]]; then
-    local blocked_count allowed_count
+    local report_json="$SESSION_DIR/session-report.json"
+    local report_script="$SCRIPTS_DIR/generate-report.sh"
+
+    # Generate JSON report if script is available
+    if [[ -x "$report_script" ]] || [[ -f "$report_script" ]]; then
+      bash "$report_script" "$AUDIT_LOG" "$report_json" "$duration" "$PROFILE" "$WORKSPACE" 2>/dev/null || true
+    fi
+
+    # Parse counts from audit log directly for terminal display
+    local blocked_count allowed_count total_count
     blocked_count=$(grep -c "BLOCKED" "$AUDIT_LOG" 2>/dev/null || echo "0")
     allowed_count=$(grep -c "ALLOWED" "$AUDIT_LOG" 2>/dev/null || echo "0")
+    total_count=$((allowed_count + blocked_count))
+
     echo ""
-    echo "═══════════════════════════════════════════"
-    echo "  Session Summary"
-    echo "  Allowed requests: $allowed_count"
-    echo "  Blocked requests: $blocked_count"
+    echo "═══════════════════════════════════════════════════════════════"
+    echo "  Session Report ($SESSION_ID)"
+    echo "  Duration: $(format_duration "$duration") | Profile: $PROFILE"
+    echo ""
+    echo "  Network Activity"
+    echo "  ────────────────────────────────────────────────────────────"
+    echo "  Total: $total_count requests | Allowed: $allowed_count | Blocked: $blocked_count"
+
+    # Show top domains
+    if [[ $total_count -gt 0 ]]; then
+      echo ""
+      echo "  Top domains:"
+      # Extract domain from both text and JSON formats
+      awk '
+        /^[0-9]{4}-[0-9]{2}-[0-9]{2}T/ && /ALLOWED/ {
+          # Text format: timestamp result method host[:port]
+          split($4, hp, ":")
+          domains[hp[1]]++
+        }
+        /^\{.*"result":"ALLOWED"/ {
+          # JSON format
+          if (match($0, /"host":"([^"]+)"/, m)) {
+            domains[m[1]]++
+          }
+        }
+        END {
+          n = 0
+          for (d in domains) {
+            count[n] = domains[d]
+            name[n] = d
+            n++
+          }
+          # Simple bubble sort (top 5 is enough)
+          for (i = 0; i < n-1; i++) {
+            for (j = i+1; j < n; j++) {
+              if (count[j] > count[i]) {
+                tmp = count[i]; count[i] = count[j]; count[j] = tmp
+                tmp = name[i]; name[i] = name[j]; name[j] = tmp
+              }
+            }
+          }
+          for (i = 0; i < 5 && i < n; i++) {
+            printf "    %-30s %d requests\n", name[i], count[i]
+          }
+        }
+      ' "$AUDIT_LOG" 2>/dev/null || true
+    fi
+
+    # Check for suspicious patterns and display warnings
+    if [[ -f "$report_json" ]]; then
+      # Extract risk info from JSON report
+      local risk_score risk_level
+      risk_score=$(grep -o '"risk_score": *[0-9]*' "$report_json" 2>/dev/null | grep -o '[0-9]*' || echo "0")
+      risk_level=$(grep -o '"risk_level": *"[^"]*"' "$report_json" 2>/dev/null | sed 's/.*"\([^"]*\)"/\1/' || echo "none")
+
+      # Show suspicious patterns if any
+      if [[ "$risk_score" -gt 0 ]]; then
+        echo ""
+        echo "  SUSPICIOUS PATTERNS"
+        echo "  ────────────────────────────────────────────────────────────"
+
+        # Parse and display suspicious items
+        # Extract JSON array content between "suspicious": [ and ]
+        sed -n '/"suspicious":/,/\]/p' "$report_json" 2>/dev/null | \
+          grep -o '"type":"[^"]*"' | sed 's/"type":"//;s/"//' | while read -r ptype; do
+            case "$ptype" in
+              repeated_blocks) echo "  [HIGH] Repeated attempts to blocked domain" ;;
+              high_block_rate) echo "  [MED]  Unusually high blocked request ratio" ;;
+              direct_ip_access) echo "  [LOW]  Direct IP access detected" ;;
+              port_scanning) echo "  [MED]  Multiple ports accessed on same IP" ;;
+              high_volume) echo "  [INFO] Unusually active session" ;;
+            esac
+          done
+
+        echo ""
+        local risk_label
+        case "$risk_level" in
+          high)   risk_label="HIGH" ;;
+          medium) risk_label="MEDIUM" ;;
+          low)    risk_label="LOW" ;;
+          *)      risk_label="NONE" ;;
+        esac
+        echo "  Risk Score: $risk_score/100 ($risk_label)"
+      fi
+    fi
+
+    # Show blocked requests if any
     if [[ "$blocked_count" -gt 0 ]]; then
       echo ""
-      echo "  ⚠  BLOCKED REQUESTS (review these):"
-      grep "BLOCKED" "$AUDIT_LOG" | tail -10 | sed 's/^/     /'
+      echo "  Blocked requests (review these):"
+      grep "BLOCKED" "$AUDIT_LOG" 2>/dev/null | tail -5 | sed 's/^/     /'
     fi
-    echo "  Audit log: $AUDIT_LOG"
-    echo "═══════════════════════════════════════════"
+
+    echo ""
+    echo "  Session files:"
+    echo "    Report: $report_json"
+    echo "    Audit:  $AUDIT_LOG"
+    echo "═══════════════════════════════════════════════════════════════"
   fi
 
   exit "$exit_code"
@@ -417,6 +744,7 @@ echo ""
 echo "┌──────────────────────────────────────────────────┐"
 echo "│  Claude Sandbox                                  │"
 echo "│  Profile:   $PROFILE"
+echo "│  Session:   $SESSION_ID"
 echo "│  Workspace: $WORKSPACE"
 echo "│  Sandbox:   $PLATFORM_LABEL"
 if [[ "$YOLO" == "1" ]]; then
