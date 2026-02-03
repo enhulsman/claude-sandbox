@@ -101,7 +101,7 @@
                 esac
               done < "$_DEFAULTS"
             fi
-            exec claude-sandbox --profile "$_PROFILE" -- "$@"
+            exec claude-sandbox --profile "$_PROFILE" "$@"
           '';
         };
 
@@ -119,7 +119,7 @@
           name = "csd";
           runtimeInputs = [ launcherScript ];
           text = ''
-            exec claude-sandbox --profile dev -- "$@"
+            exec claude-sandbox --profile dev "$@"
           '';
         };
 
@@ -128,7 +128,7 @@
           name = "css";
           runtimeInputs = [ launcherScript ];
           text = ''
-            exec claude-sandbox --profile strict -- "$@"
+            exec claude-sandbox --profile strict "$@"
           '';
         };
 

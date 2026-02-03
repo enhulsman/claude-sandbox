@@ -419,14 +419,6 @@ sessions_clean_interactive() {
   esac
 }
 
-# ── Handle Subcommands ────────────────────────────────────────
-# Check for subcommands before main argument parsing
-if [[ "${1:-}" == "sessions" ]]; then
-  shift
-  sessions_cmd "$@"
-  exit $?
-fi
-
 # ── Parse Arguments ───────────────────────────────────────────
 CLAUDE_ARGS=()
 EXEC_CMD=()
@@ -445,6 +437,7 @@ while [[ $# -gt 0 ]]; do
     --shell)     EXEC_CMD=("bash"); break ;;
     --exec)      shift; EXEC_CMD=("$@"); break ;;
     -h|--help)   usage ;;
+    sessions)    shift; sessions_cmd "$@"; exit $? ;;
     --)          shift; CLAUDE_ARGS=("$@"); break ;;
     *)           CLAUDE_ARGS+=("$1"); shift ;;
   esac
