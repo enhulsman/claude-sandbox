@@ -448,8 +448,10 @@ export _CS_SESSION_ID
 export _CS_SESSION_DIR
 
 # ── Run Pre-Session Git Check ─────────────────────────────────
-# Only runs for dev profile with uncommitted changes, prompts user for action
-check_git_status "$(pwd)"
+# Only runs for dev profile when launching Claude Code (not --exec/--shell)
+if [[ ${#EXEC_CMD[@]} -eq 0 ]]; then
+  check_git_status "$(pwd)"
+fi
 
 # ── Generate Sandbox Context for Claude Code ─────────────────
 # Creates a system prompt addendum so Claude Code understands it's running
