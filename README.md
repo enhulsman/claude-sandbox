@@ -275,10 +275,10 @@ the workspace. You review them. You apply them with sudo.
 
 - [ ] **Choose the right profile.** System admin → `nixos-admin`/`macos-admin`.
       Development → `dev`. Untrusted code → `strict`.
-- [ ] **Commit your work.** `git add -A && git commit -m "before claude"` so you
-      can revert if needed.
-- [ ] **Clean the workspace.** `rm -rf ~/claude-workspace/*` — previous session
-      artifacts should not contaminate new sessions.
+- [ ] **Commit your work.** The launcher now prompts about uncommitted changes
+      when using the `dev` profile (see Session Automation below).
+- [ ] **Clean the workspace.** Use `--clean-sessions 7` to remove old session
+      data, or `rm -rf ~/claude-workspace/.sessions/*` manually.
 - [ ] **Verify the sandbox** (first time or after updates):
       `nix run . -- --profile dev --exec bash scripts/verify.sh`
 
@@ -304,31 +304,41 @@ If something seems wrong: **end the session, start fresh, review the audit log.*
 
 ### After the Session
 
-The launcher prints a session summary automatically on exit, showing how many
-requests were allowed/blocked and listing any blocked requests for review.
+The launcher prints an enhanced session report automatically on exit, including:
+
+- **Request counts** (total, allowed, blocked)
+- **Top domains** contacted during the session
+- **Suspicious pattern detection** (repeated blocks, high block rate, direct IP access)
+- **Risk score** (0-100) with severity level
 
 For deeper review:
 
 ```bash
+# JSON session report with full breakdown
+cat ~/claude-workspace/.sessions/current/session-report.json
+
 # Full audit log — every request with timestamp and status
-cat ~/claude-workspace/.proxy-audit.log
+cat ~/claude-workspace/.sessions/current/proxy-audit.log
 
 # What domains were contacted?
-awk '{print $4}' ~/claude-workspace/.proxy-audit.log | sort -u
+jq '.network.by_domain | keys[]' ~/claude-workspace/.sessions/current/session-report.json
 
 # Were any requests blocked? (potential prompt injection indicators)
-grep BLOCKED ~/claude-workspace/.proxy-audit.log
+grep BLOCKED ~/claude-workspace/.sessions/current/proxy-audit.log
 
-# Were any unexpected domains ALLOWED?
-grep ALLOWED ~/claude-workspace/.proxy-audit.log | grep -v anthropic
+# Check risk score and suspicious patterns
+jq '{risk_score, risk_level, suspicious}' ~/claude-workspace/.sessions/current/session-report.json
 
 # Proxy startup messages and errors (separate from audit)
-cat ~/claude-workspace/.proxy.log
+cat ~/claude-workspace/.sessions/current/proxy.log
 
 # Review Claude's proposals before applying
 ls ~/claude-workspace/
 diff /etc/nixos/configuration.nix ~/claude-workspace/proposed-configuration.nix
 ```
+
+**Note**: A symlink at `~/claude-workspace/.proxy-audit.log` points to the current
+session's audit log for backward compatibility.
 
 ### Applying Changes (NixOS Example)
 
@@ -365,6 +375,129 @@ sudo nixos-rebuild switch
 
 ---
 
+## Session Automation
+
+### Pre-Session Git Check (Dev Profile)
+
+When launching with `--profile dev`, the sandbox checks for uncommitted changes
+in your current directory. If changes exist, you'll see an interactive prompt:
+
+```
+┌──────────────────────────────────────────────────────────────┐
+│  Uncommitted changes detected in /home/user/project         │
+│                                                              │
+│     M src/main.py                                            │
+│     ?? tests/test_new.py                                     │
+│                                                              │
+│  [1] Pause - I'll commit manually (then press Enter)         │
+│  [2] Auto-commit: "pre-claude-20260203-143022"               │
+│  [3] Continue without committing                             │
+│  [4] Abort                                                   │
+└──────────────────────────────────────────────────────────────┘
+```
+
+This protects your work when `dev` profile has `.` (cwd) writable.
+
+Skip with `--skip-git-check` for scripted/CI use, or when running non-interactively.
+
+### Session-Isolated Storage
+
+Each session creates a unique directory for its logs and context:
+
+```
+~/claude-workspace/
+├── my-output.py                      # Your files (persistent)
+├── .sessions/
+│   ├── 20260203-143022-12345/        # Session YYYYMMDD-HHMMSS-PID
+│   │   ├── proxy-audit.log           # Network audit trail
+│   │   ├── proxy.log                 # Proxy startup/errors
+│   │   ├── sandbox-context.md        # Generated context file
+│   │   └── session-report.json       # Report with suspicious patterns
+│   └── current -> 20260203-143022-12345  # Symlink to active
+```
+
+The session ID is shown in the startup banner.
+
+### Session Management
+
+List and manage sessions with the `sessions` subcommand:
+
+```bash
+# List all sessions
+cs sessions
+
+# Interactive cleanup (shows options)
+cs sessions clean
+
+# Remove sessions older than 7 days
+cs sessions clean --days 7
+
+# Remove the 3 oldest sessions
+cs sessions clean --oldest 3
+
+# Remove all sessions (except current)
+cs sessions clean --all
+
+# Skip confirmation prompt
+cs sessions clean --days 7 --yes
+```
+
+### Enhanced Session Reports
+
+On exit, the launcher generates a JSON report with:
+
+- **Network statistics**: Total/allowed/blocked counts, per-domain breakdown
+- **Suspicious pattern detection**:
+  - Repeated blocks on same domain (prompt injection indicator)
+  - High blocked request rate (>10%)
+  - Direct IP access (bypasses domain filtering)
+  - Port scanning (multiple ports on same IP)
+  - High request volume (>500 requests)
+- **Risk score**: 0-100 with severity level (none/low/medium/high)
+
+```bash
+# View the full report
+cat ~/claude-workspace/.sessions/current/session-report.json
+
+# Quick risk check
+jq '{risk_score, risk_level}' ~/claude-workspace/.sessions/current/session-report.json
+```
+
+### Optional: PreToolUse Guard Hook
+
+An optional hook script detects potentially harmful commands before execution.
+This is a "speed bump" for obvious mistakes, NOT a security boundary.
+
+**Installation:**
+
+```bash
+mkdir -p ~/.claude/hooks
+cp hooks/pretooluse-guard.sh ~/.claude/hooks/
+chmod +x ~/.claude/hooks/pretooluse-guard.sh
+```
+
+Configure in `~/.claude/settings.json`:
+
+```json
+{
+  "hooks": {
+    "PreToolUse": [{
+      "matcher": "Bash",
+      "hooks": [{"type": "command", "command": "~/.claude/hooks/pretooluse-guard.sh"}]
+    }]
+  }
+}
+```
+
+The hook detects patterns like `sudo`, `bwrap`, `socat TCP:`, `rm -rf /`, etc.
+
+**CRITICAL**: This hook can be trivially bypassed (variable expansion, base64, etc.).
+The sandbox is the real security boundary. See `hooks/README.md` for details and
+bypass examples.
+
+
+---
+
 ## How It Works
 
 ### Architecture
@@ -385,7 +518,7 @@ sudo nixos-rebuild switch
      ┌──────────▼───────────────────────▼──────────┐
      │     EGRESS PROXY (Python, identical both)    │
      │     Domain allowlist + audit logging          │
-     │     HTTP CONNECT + SOCKS5                     │
+     │     HTTP CONNECT tunneling                    │
      └──────────────────────────────────────────────┘
 ```
 
@@ -433,7 +566,6 @@ Claude (Seatbelt) → HTTP_PROXY → 127.0.0.1:PORT → allowlist check → inte
 The proxy is the security-critical portable component. Same Python on every OS.
 
 - Listens on localhost for HTTP CONNECT (HTTPS) and plain HTTP requests
-- Also speaks SOCKS5 for tools that ignore `HTTP_PROXY`
 - Checks every destination hostname against the configured allowlist
 - Logs every request (allowed or blocked) with timestamp to the audit file
 - Returns HTTP 403 for blocked requests
@@ -494,8 +626,12 @@ claude-sandbox/
 │   ├── macos-sandbox.sh          # macOS: sandbox-exec + Seatbelt
 │   ├── generate-seatbelt.sh      # Generates .sb profile from config
 │   ├── egress-proxy.py           # Network proxy (Python, cross-platform)
+│   ├── generate-report.sh        # Session report generator
 │   ├── verify.sh                 # Sandbox isolation tests
 │   └── setup-aliases.sh          # Shell alias generator/installer
+├── hooks/
+│   ├── pretooluse-guard.sh       # Optional harmful command detection hook
+│   └── README.md                 # Hook installation documentation
 └── README.md                     # You are here
 ```
 
@@ -506,6 +642,7 @@ claude-sandbox/
 
 ```
 claude-sandbox [OPTIONS] [-- CLAUDE_ARGS...]
+claude-sandbox sessions [list|clean] [OPTIONS]
 
 Options:
   --profile PROFILE     Security profile (default: dev)
@@ -515,8 +652,17 @@ Options:
   --exec CMD [ARGS]     Run CMD instead of Claude Code (for testing/debugging)
   --shell               Shortcut for --exec bash (interactive shell in sandbox)
   --yolo                Pass --dangerously-skip-permissions to Claude Code
+  --skip-git-check      Skip uncommitted changes check (dev profile only)
   --dry-run             Show what would be done without executing
   -h, --help            Show help
+
+Subcommands:
+  sessions              List all sessions (alias: sessions list)
+  sessions clean        Interactive session cleanup
+    --days N            Remove sessions older than N days
+    --oldest N          Remove the N oldest sessions
+    --all               Remove all sessions (except current)
+    --yes               Skip confirmation prompt
 
 Examples:
   claude-sandbox --profile dev                                # interactive Claude Code
@@ -525,6 +671,10 @@ Examples:
   claude-sandbox --profile dev --exec bash scripts/verify.sh  # run verify script
   claude-sandbox --profile dev --shell                        # interactive shell
   claude-sandbox --profile dev --exec cat /etc/shadow         # test if file is blocked
+  claude-sandbox --profile dev --skip-git-check               # skip uncommitted warning
+  claude-sandbox sessions                                     # list all sessions
+  claude-sandbox sessions clean --days 7                      # cleanup old sessions
+  claude-sandbox sessions clean --oldest 3                    # remove 3 oldest
 
 Environment Variables:
   CLAUDE_SANDBOX_PROFILE    Default profile
@@ -570,6 +720,68 @@ nix run . -- --profile dev --yolo
 **When NOT to use `--yolo`**: if you're working with the `dev` profile and your
 project directory is writable, Claude can modify any file in your project
 without asking. Make sure to `git commit` before starting so you can revert.
+
+### Git Operations
+
+Git credentials are blocked inside the sandbox to prevent exfiltration via prompt
+injection. This affects how git operations work:
+
+**What works normally:**
+- `git log`, `git diff`, `git status`, `git blame`, `git show` — all read operations
+- Local commits (if you provide author identity, see below)
+- Viewing remotes and branches
+
+**What requires extra steps:**
+
+| Operation | Inside Sandbox | Recommended Approach |
+|-----------|----------------|---------------------|
+| `git commit` | Fails: "Please tell me who you are" | Provide identity via env vars (see below) or commit outside sandbox |
+| `git push` (HTTPS) | Prompts for credentials | Enter manually, or push outside sandbox |
+| `git push` (SSH) | Blocked: SSH keys not accessible | Use HTTPS remote, or push outside sandbox |
+| `git fetch` (SSH) | Blocked | Use HTTPS remote |
+
+**To enable commits inside the sandbox:**
+
+```bash
+# Set identity via environment (doesn't expose real credentials)
+export GIT_AUTHOR_NAME="Claude Sandbox"
+export GIT_AUTHOR_EMAIL="sandbox@localhost"
+export GIT_COMMITTER_NAME="Claude Sandbox"
+export GIT_COMMITTER_EMAIL="sandbox@localhost"
+nix run . -- --profile dev
+```
+
+Or add to your `~/.config/claude-sandbox/defaults`:
+```bash
+GIT_AUTHOR_NAME="Your Name"
+GIT_AUTHOR_EMAIL="you@example.com"
+```
+
+**To push changes:**
+
+```bash
+# Option 1: Push inside sandbox with HTTPS (will prompt for token)
+# First, switch remote to HTTPS if using SSH:
+git remote set-url origin https://github.com/user/repo.git
+git push  # Enter GitHub username + personal access token when prompted
+
+# Option 2: Push outside sandbox (recommended for sensitive repos)
+# Inside sandbox: make your commits
+# Exit sandbox, then:
+git push
+```
+
+**Why SSH is not supported:**
+
+SSH traffic cannot go through an HTTP proxy — it's a fundamentally different
+protocol. The sandbox's network isolation routes all traffic through the HTTP
+egress proxy for domain filtering and audit logging. Supporting SSH would require
+either:
+- Punching a hole in the network isolation (weakens security)
+- Adding a separate SSH proxy (complex, hard to audit)
+
+HTTPS with personal access tokens provides equivalent functionality with better
+audit visibility. GitHub, GitLab, and Bitbucket all support HTTPS push.
 
 
 ---
@@ -632,6 +844,31 @@ the local cache and start in under a second.
 ---
 
 ## Security Model
+
+### Threat Model
+
+This sandbox is designed primarily to defend against **prompt injection attacks** —
+malicious content in repositories, web pages, or user input that attempts to
+manipulate Claude into executing harmful commands or exfiltrating data.
+
+**The sandbox assumes Claude Code itself is not malicious.** It protects against:
+
+1. **Compromised context** — A poisoned README.md, code comment, or issue that
+   tricks Claude into `curl`ing secrets to an attacker's server
+2. **Credential exposure minimization** — Even if an attack partially succeeds,
+   blocking credential paths (SSH keys, git tokens, AWS creds) limits what can
+   be stolen
+3. **Network exfiltration** — Even if Claude is tricked into trying to send data,
+   the proxy blocks non-allowlisted domains and logs all attempts
+
+**What this does NOT protect against:**
+- If you intentionally give Claude access to credentials (by modifying the profile)
+- If Anthropic's servers are compromised
+- A deliberately adversarial AI that wanted to exfiltrate data — this sandbox
+  prevents accidents and prompt injection, not a superintelligent adversary
+
+The sandbox is **defense in depth**: multiple independent layers that an attacker
+must bypass simultaneously. No single layer is assumed to be perfect.
 
 ### What This Protects Against
 

@@ -9,18 +9,16 @@ No external dependencies — stdlib only.
 Supports:
   - HTTP CONNECT tunneling (for HTTPS traffic)
   - Plain HTTP proxying (GET, POST, etc.)
-  - SOCKS5 proxying (for tools that ignore HTTP_PROXY)
   - Domain allowlist with subdomain matching
   - Audit logging with timestamps
 """
 
 import argparse
 import http.server
-import os
+import json
 import select
 import socket
 import socketserver
-import struct
 import sys
 import threading
 import time
@@ -32,9 +30,10 @@ from datetime import datetime, timezone
 # ══════════════════════════════════════════════════════════════
 
 class ProxyConfig:
-    def __init__(self, allowed_domains, audit_log_path):
+    def __init__(self, allowed_domains, audit_log_path, json_audit=False):
         self.allowed_domains = set(d.lower().strip(".") for d in allowed_domains)
         self.audit_log_path = audit_log_path
+        self.json_audit = json_audit
         self._audit_file = None
         self._lock = threading.Lock()
 
@@ -49,7 +48,29 @@ class ProxyConfig:
     def audit(self, method, host, result):
         """Thread-safe audit logging."""
         ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-        line = f"{ts} {result:7s} {method:7s} {host}\n"
+
+        # Parse host:port if present
+        if ":" in host:
+            hostname, port_str = host.rsplit(":", 1)
+            try:
+                port = int(port_str)
+            except ValueError:
+                hostname, port = host, None
+        else:
+            hostname, port = host, None
+
+        if self.json_audit:
+            entry = {
+                "ts": ts,
+                "result": result,
+                "method": method,
+                "host": hostname,
+            }
+            if port is not None:
+                entry["port"] = port
+            line = json.dumps(entry, separators=(",", ":")) + "\n"
+        else:
+            line = f"{ts} {result:7s} {method:7s} {host}\n"
 
         with self._lock:
             if self._audit_file is None and self.audit_log_path:
@@ -157,90 +178,6 @@ class ProxyHandler(http.server.BaseHTTPRequestHandler):
 
 
 # ══════════════════════════════════════════════════════════════
-# SOCKS5 Proxy
-# ══════════════════════════════════════════════════════════════
-
-class Socks5Handler(socketserver.BaseRequestHandler):
-    """Minimal SOCKS5 proxy for tools that ignore HTTP_PROXY."""
-
-    def handle(self):
-        try:
-            self._do_socks5()
-        except Exception:
-            pass
-
-    def _do_socks5(self):
-        conn = self.request
-
-        # --- Greeting ---
-        data = conn.recv(256)
-        if len(data) < 2 or data[0] != 0x05:
-            return
-        # Reply: no authentication required
-        conn.sendall(b"\x05\x00")
-
-        # --- Request ---
-        data = conn.recv(512)
-        if len(data) < 4 or data[0] != 0x05 or data[1] != 0x01:
-            conn.sendall(b"\x05\x07\x00\x01" + b"\x00" * 6)
-            return
-
-        atype = data[3]
-        if atype == 0x01:      # IPv4
-            if len(data) < 10:
-                return
-            host = socket.inet_ntoa(data[4:8])
-            port = struct.unpack("!H", data[8:10])[0]
-        elif atype == 0x03:    # Domain name
-            domain_len = data[4]
-            if len(data) < 5 + domain_len + 2:
-                return
-            host = data[5:5 + domain_len].decode("ascii", errors="replace")
-            port = struct.unpack("!H", data[5 + domain_len:7 + domain_len])[0]
-        elif atype == 0x04:    # IPv6
-            if len(data) < 22:
-                return
-            host = socket.inet_ntop(socket.AF_INET6, data[4:20])
-            port = struct.unpack("!H", data[20:22])[0]
-        else:
-            conn.sendall(b"\x05\x08\x00\x01" + b"\x00" * 6)
-            return
-
-        # --- Check allowlist ---
-        if not self.server.config.is_allowed(host):
-            self.server.config.audit("SOCKS5", f"{host}:{port}", "BLOCKED")
-            # Reply: connection not allowed
-            conn.sendall(b"\x05\x02\x00\x01" + b"\x00" * 6)
-            return
-
-        self.server.config.audit("SOCKS5", f"{host}:{port}", "ALLOWED")
-
-        # --- Connect to remote ---
-        try:
-            remote = socket.create_connection((host, port), timeout=15)
-        except Exception:
-            conn.sendall(b"\x05\x05\x00\x01" + b"\x00" * 6)
-            return
-
-        # --- Success reply ---
-        bind_addr, bind_port = remote.getsockname()[:2]
-        try:
-            addr_bytes = socket.inet_aton(bind_addr)
-            atype_reply = b"\x01"
-        except OSError:
-            addr_bytes = b"\x00" * 4
-            atype_reply = b"\x01"
-
-        conn.sendall(
-            b"\x05\x00\x00" + atype_reply + addr_bytes + struct.pack("!H", bind_port)
-        )
-
-        # --- Relay data ---
-        _tunnel(conn, remote)
-        remote.close()
-
-
-# ══════════════════════════════════════════════════════════════
 # Shared: bidirectional tunnel
 # ══════════════════════════════════════════════════════════════
 
@@ -278,15 +215,6 @@ class ThreadedHTTPProxy(socketserver.ThreadingMixIn, http.server.HTTPServer):
         super().__init__(addr, handler_class)
 
 
-class ThreadedSocks5Proxy(socketserver.ThreadingMixIn, socketserver.TCPServer):
-    daemon_threads = True
-    allow_reuse_address = True
-
-    def __init__(self, addr, handler_class, config):
-        self.config = config
-        super().__init__(addr, handler_class)
-
-
 # ══════════════════════════════════════════════════════════════
 # Main
 # ══════════════════════════════════════════════════════════════
@@ -300,16 +228,16 @@ def main():
         help="HTTP proxy listen port"
     )
     parser.add_argument(
-        "--socks-port", type=int, default=0,
-        help="SOCKS5 proxy listen port (0 = disabled)"
-    )
-    parser.add_argument(
         "--allow", action="append", default=[],
         help="Allowed domain (repeatable). Subdomains are included."
     )
     parser.add_argument(
         "--audit-log", default="",
         help="Path to audit log file"
+    )
+    parser.add_argument(
+        "--json-audit", action="store_true",
+        help="Output audit log in JSON-lines format (default: text)"
     )
     args = parser.parse_args()
 
@@ -320,7 +248,7 @@ def main():
             file=sys.stderr,
         )
 
-    config = ProxyConfig(args.allow, args.audit_log)
+    config = ProxyConfig(args.allow, args.audit_log, args.json_audit)
 
     # Start HTTP/CONNECT proxy
     http_server = ThreadedHTTPProxy(
@@ -329,17 +257,6 @@ def main():
     http_thread = threading.Thread(target=http_server.serve_forever, daemon=True)
     http_thread.start()
     print(f"[PROXY] HTTP proxy on 127.0.0.1:{args.port}", file=sys.stderr)
-
-    # Optionally start SOCKS5 proxy
-    if args.socks_port > 0:
-        socks_server = ThreadedSocks5Proxy(
-            ("127.0.0.1", args.socks_port), Socks5Handler, config
-        )
-        socks_thread = threading.Thread(
-            target=socks_server.serve_forever, daemon=True
-        )
-        socks_thread.start()
-        print(f"[PROXY] SOCKS5 proxy on 127.0.0.1:{args.socks_port}", file=sys.stderr)
 
     domains = ", ".join(args.allow) if args.allow else "(none — all blocked)"
     print(f"[PROXY] Allowed domains: {domains}", file=sys.stderr)
