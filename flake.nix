@@ -34,7 +34,8 @@
           pkgs.gnugrep
           pkgs.gnused
           pkgs.gawk
-          pkgs.curl       # for verification tests
+          pkgs.bc          # for size calculations in sessions command
+          pkgs.curl        # for verification tests
           pkgs.findutils
           claude-code-nix.packages.${system}.default
         ];

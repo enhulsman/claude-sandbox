@@ -202,7 +202,7 @@ sessions_list() {
 
     sessions+=("$mtime|$name|$age_str|$size|$marker")
     total_size=$((total_size + size_bytes))
-    ((count++))
+    ((count++)) || true
   done < <(find "$sessions_dir" -maxdepth 1 -type d -name "[0-9]*-[0-9]*" -print0 2>/dev/null | sort -z)
 
   if [[ $count -eq 0 ]]; then
@@ -299,7 +299,7 @@ sessions_clean() {
       IFS='|' read -r _ name dir <<< "$entry"
       if [[ "$name" != "$current" ]]; then
         to_remove+=("$dir")
-        ((count++))
+        ((count++)) || true
       fi
     done
   elif [[ -n "$days" ]]; then
@@ -380,7 +380,7 @@ sessions_clean_interactive() {
     local size_bytes=$(du -sb "$dir" 2>/dev/null | cut -f1)
     local age_days=$(( (now - mtime) / 86400 ))
 
-    ((all_count++)); all_size=$((all_size + size_bytes))
+    ((all_count++)) || true; all_size=$((all_size + size_bytes))
     [[ $age_days -ge 7 ]]  && { ((d7_count++));  d7_size=$((d7_size + size_bytes)); }
     [[ $age_days -ge 14 ]] && { ((d14_count++)); d14_size=$((d14_size + size_bytes)); }
     [[ $age_days -ge 30 ]] && { ((d30_count++)); d30_size=$((d30_size + size_bytes)); }
