@@ -1,0 +1,10 @@
+# Nix build outputs
+result
+result-*
+
+# Python bytecode
+__pycache__/
+*.pyc
+
+# Claude Code local settings (user-specific, not project config)
+.claude/
