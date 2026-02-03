@@ -278,6 +278,34 @@ BWRAP_ARGS+=(
   --setenv CLAUDE_SANDBOX_WORKSPACE "$_CS_WORKSPACE"
 )
 
+# --- Working directory ---
+# If the cwd is under a blocked path (e.g. ~ in strict profile) and not
+# overridden by a writable mount, it won't exist in the sandbox. Without
+# --chdir, bwrap would land in / or an empty tmpfs. Fall back to the
+# workspace so Claude starts somewhere usable.
+_cwd="$(pwd)"
+_cwd_accessible=1
+for path in "${BLOCKED_PATHS[@]}"; do
+  [[ -z "$path" ]] && continue
+  if [[ "$_cwd" == "$path" || "$_cwd" == "$path"/* ]]; then
+    _cwd_accessible=0
+    for wpath in "${WRITABLE_PATHS[@]}"; do
+      [[ -z "$wpath" ]] && continue
+      if [[ "$wpath" != /* ]]; then
+        wpath="$(cd "$wpath" 2>/dev/null && pwd || echo "$wpath")"
+      fi
+      if [[ "$_cwd" == "$wpath" || "$_cwd" == "$wpath"/* ]]; then
+        _cwd_accessible=1
+        break
+      fi
+    done
+    break
+  fi
+done
+if [[ "$_cwd_accessible" == "0" ]]; then
+  BWRAP_ARGS+=(--chdir "$_CS_WORKSPACE")
+fi
+
 # --- Exec via entry script ---
 # The entry script brings up loopback, starts the TCP→Unix bridge,
 # then execs Claude Code. This is needed because --unshare-net kills

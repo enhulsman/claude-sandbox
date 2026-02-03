@@ -109,15 +109,75 @@ nix run . -- --profile macos-admin -- -p "why is launchd using so much CPU"
 
 ### Shell Aliases
 
+Several options for making sandboxed Claude easy to invoke:
+
+**Option 1: Auto-generate** (recommended)
+
+```bash
+# Preview what will be added
+bash scripts/setup-aliases.sh
+
+# Write to ~/.bashrc or ~/.zshrc (idempotent — safe to re-run)
+bash scripts/setup-aliases.sh --install
+
+# Use GitHub URL instead of local path
+bash scripts/setup-aliases.sh --github --install
+```
+
+**Option 2: Manual aliases**
+
 Add to `~/.bashrc` or `~/.zshrc`:
 
 ```bash
-alias claude-safe='nix run /path/to/claude-sandbox --'
-alias claude-admin='nix run /path/to/claude-sandbox -- --profile nixos-admin --'
-alias claude-dev='nix run /path/to/claude-sandbox -- --profile dev --'
-alias claude-yolo='nix run /path/to/claude-sandbox -- --profile dev --yolo --'
-alias claude-strict='nix run /path/to/claude-sandbox -- --profile strict --'
+alias claude='nix run /path/to/claude-sandbox#claude --'
+alias cs='nix run /path/to/claude-sandbox#cs --'
+alias csd='nix run /path/to/claude-sandbox#csd --'
+alias css='nix run /path/to/claude-sandbox#css --'
+alias claude-sandbox='nix run /path/to/claude-sandbox --'
 ```
+
+**Option 3: `nix develop` shell**
+
+```bash
+cd /path/to/claude-sandbox
+nix develop
+# All commands available: claude, cs, csd, css, claude-sandbox
+```
+
+**Option 4: Direct `nix run`**
+
+```bash
+nix run github:enhulsman/claude-sandbox#claude -- -p "hello"
+nix run github:enhulsman/claude-sandbox#csd -- -p "hello"
+nix run github:enhulsman/claude-sandbox#css -- -p "hello"
+```
+
+The aliases provide:
+
+| Command | Profile | Description |
+|---------|---------|-------------|
+| `claude` | configured default | Drop-in `claude` replacement (reads defaults file) |
+| `cs` | configured default | Short alias for `claude` |
+| `csd` | `dev` | Hardcoded dev profile |
+| `css` | `strict` | Hardcoded strict profile |
+| `claude-sandbox` | any | Full launcher with all options |
+
+### Default Profile Configuration
+
+Create `~/.config/claude-sandbox/defaults` to set persistent defaults:
+
+```bash
+mkdir -p ~/.config/claude-sandbox
+cat > ~/.config/claude-sandbox/defaults <<'EOF'
+CLAUDE_SANDBOX_PROFILE=dev
+CLAUDE_SANDBOX_WORKSPACE=~/claude-workspace
+# CLAUDE_SANDBOX_YOLO=1
+EOF
+```
+
+Priority (highest to lowest): CLI flags > environment variables > defaults file > hardcoded defaults.
+
+Override the defaults file path with `CLAUDE_SANDBOX_DEFAULTS`.
 
 ### Updating Claude Code
 
@@ -434,7 +494,8 @@ claude-sandbox/
 │   ├── macos-sandbox.sh          # macOS: sandbox-exec + Seatbelt
 │   ├── generate-seatbelt.sh      # Generates .sb profile from config
 │   ├── egress-proxy.py           # Network proxy (Python, cross-platform)
-│   └── verify.sh                 # Sandbox isolation tests
+│   ├── verify.sh                 # Sandbox isolation tests
+│   └── setup-aliases.sh          # Shell alias generator/installer
 └── README.md                     # You are here
 ```
 

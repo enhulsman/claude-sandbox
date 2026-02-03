@@ -22,6 +22,40 @@ CONFIG_FILE="${CLAUDE_SANDBOX_CONFIG:-}"
 SCRIPTS_DIR="${CLAUDE_SANDBOX_SCRIPTS:-$(cd "$(dirname "$0")" && pwd)}"
 PROXY_BIN="${CLAUDE_SANDBOX_PROXY:-claude-egress-proxy}"
 
+# ── Load Defaults File ──────────────────────────────────────
+# Priority: CLI flags > env vars > defaults file > hardcoded defaults
+# Recognized keys: CLAUDE_SANDBOX_PROFILE, CLAUDE_SANDBOX_WORKSPACE,
+#                  CLAUDE_SANDBOX_YOLO
+_CS_DEFAULTS_FILE="${CLAUDE_SANDBOX_DEFAULTS:-${XDG_CONFIG_HOME:-$HOME/.config}/claude-sandbox/defaults}"
+_CS_DEFAULT_YOLO=""
+
+if [[ -f "$_CS_DEFAULTS_FILE" ]]; then
+  while IFS= read -r _line || [[ -n "$_line" ]]; do
+    # Skip comments and blank lines
+    _line="${_line%%#*}"
+    [[ -z "${_line// /}" ]] && continue
+    _key="${_line%%=*}"
+    _val="${_line#*=}"
+    # Trim whitespace
+    _key="${_key#"${_key%%[![:space:]]*}"}"
+    _key="${_key%"${_key##*[![:space:]]}"}"
+    _val="${_val#"${_val%%[![:space:]]*}"}"
+    _val="${_val%"${_val##*[![:space:]]}"}"
+    # Strip surrounding quotes
+    _val="${_val#\"}" ; _val="${_val%\"}"
+    _val="${_val#\'}" ; _val="${_val%\'}"
+    case "$_key" in
+      CLAUDE_SANDBOX_PROFILE)
+        # Only apply if not already set via env var
+        PROFILE="${CLAUDE_SANDBOX_PROFILE:-$_val}" ;;
+      CLAUDE_SANDBOX_WORKSPACE)
+        WORKSPACE="${CLAUDE_SANDBOX_WORKSPACE:-$_val}" ;;
+      CLAUDE_SANDBOX_YOLO)
+        _CS_DEFAULT_YOLO="$_val" ;;
+    esac
+  done < "$_CS_DEFAULTS_FILE"
+fi
+
 PROXY_PORT=""
 PROXY_PID=""
 SOCAT_PID=""
@@ -81,6 +115,11 @@ while [[ $# -gt 0 ]]; do
     *)           CLAUDE_ARGS+=("$1"); shift ;;
   esac
 done
+
+# Apply default YOLO if not set via CLI flag
+if [[ "$YOLO" == "0" && "$_CS_DEFAULT_YOLO" == "1" ]]; then
+  YOLO=1
+fi
 
 # ── Setup Workspace ───────────────────────────────────────────
 mkdir -p "$WORKSPACE"
