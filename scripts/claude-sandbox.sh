@@ -849,10 +849,10 @@ start_proxy() {
   PROXY_PID=$!
 
   # Wait for proxy to be ready (up to 5 seconds)
-  # Uses curl instead of python3 — much faster to spawn, especially on ARM.
+  # Uses TCP connection check instead of HTTP request to avoid polluting audit log
   local ready=0
   for _ in $(seq 1 50); do
-    if curl -so /dev/null --connect-timeout 0.2 "http://127.0.0.1:${PROXY_PORT}/" 2>/dev/null; then
+    if (echo >/dev/tcp/127.0.0.1/"$PROXY_PORT") 2>/dev/null; then
       ready=1
       break
     fi
@@ -912,8 +912,10 @@ cleanup() {
 
     # Parse counts from audit log directly for terminal display
     local blocked_count allowed_count total_count
-    blocked_count=$(grep -c "BLOCKED" "$AUDIT_LOG" 2>/dev/null || echo "0")
-    allowed_count=$(grep -c "ALLOWED" "$AUDIT_LOG" 2>/dev/null || echo "0")
+    blocked_count=$(grep -c "BLOCKED" "$AUDIT_LOG" 2>/dev/null | head -1 || true)
+    allowed_count=$(grep -c "ALLOWED" "$AUDIT_LOG" 2>/dev/null | head -1 || true)
+    blocked_count="${blocked_count:-0}"
+    allowed_count="${allowed_count:-0}"
     total_count=$((allowed_count + blocked_count))
 
     echo ""
