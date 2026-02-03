@@ -316,7 +316,9 @@ ln -sfn "$SESSION_ID" "$WORKSPACE/.sessions/current"
 # Session-specific paths
 AUDIT_LOG="$SESSION_DIR/proxy-audit.log"
 PROXY_LOG="$SESSION_DIR/proxy.log"
-SANDBOX_CONTEXT_FILE="$SESSION_DIR/sandbox-context.md"
+
+# Sandbox context file (not per-session - deterministic from profile)
+SANDBOX_CONTEXT_FILE="$WORKSPACE/.sandbox-context.md"
 
 # Backward compatibility: symlink at old location for tools expecting it
 ln -sf "$AUDIT_LOG" "$WORKSPACE/.proxy-audit.log" 2>/dev/null || true
