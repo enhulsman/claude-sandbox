@@ -518,7 +518,7 @@ bypass examples.
      ┌──────────▼───────────────────────▼──────────┐
      │     EGRESS PROXY (Python, identical both)    │
      │     Domain allowlist + audit logging          │
-     │     HTTP CONNECT + SOCKS5                     │
+     │     HTTP CONNECT tunneling                    │
      └──────────────────────────────────────────────┘
 ```
 
@@ -566,7 +566,6 @@ Claude (Seatbelt) → HTTP_PROXY → 127.0.0.1:PORT → allowlist check → inte
 The proxy is the security-critical portable component. Same Python on every OS.
 
 - Listens on localhost for HTTP CONNECT (HTTPS) and plain HTTP requests
-- Also speaks SOCKS5 for tools that ignore `HTTP_PROXY`
 - Checks every destination hostname against the configured allowlist
 - Logs every request (allowed or blocked) with timestamp to the audit file
 - Returns HTTP 403 for blocked requests
@@ -722,6 +721,68 @@ nix run . -- --profile dev --yolo
 project directory is writable, Claude can modify any file in your project
 without asking. Make sure to `git commit` before starting so you can revert.
 
+### Git Operations
+
+Git credentials are blocked inside the sandbox to prevent exfiltration via prompt
+injection. This affects how git operations work:
+
+**What works normally:**
+- `git log`, `git diff`, `git status`, `git blame`, `git show` — all read operations
+- Local commits (if you provide author identity, see below)
+- Viewing remotes and branches
+
+**What requires extra steps:**
+
+| Operation | Inside Sandbox | Recommended Approach |
+|-----------|----------------|---------------------|
+| `git commit` | Fails: "Please tell me who you are" | Provide identity via env vars (see below) or commit outside sandbox |
+| `git push` (HTTPS) | Prompts for credentials | Enter manually, or push outside sandbox |
+| `git push` (SSH) | Blocked: SSH keys not accessible | Use HTTPS remote, or push outside sandbox |
+| `git fetch` (SSH) | Blocked | Use HTTPS remote |
+
+**To enable commits inside the sandbox:**
+
+```bash
+# Set identity via environment (doesn't expose real credentials)
+export GIT_AUTHOR_NAME="Claude Sandbox"
+export GIT_AUTHOR_EMAIL="sandbox@localhost"
+export GIT_COMMITTER_NAME="Claude Sandbox"
+export GIT_COMMITTER_EMAIL="sandbox@localhost"
+nix run . -- --profile dev
+```
+
+Or add to your `~/.config/claude-sandbox/defaults`:
+```bash
+GIT_AUTHOR_NAME="Your Name"
+GIT_AUTHOR_EMAIL="you@example.com"
+```
+
+**To push changes:**
+
+```bash
+# Option 1: Push inside sandbox with HTTPS (will prompt for token)
+# First, switch remote to HTTPS if using SSH:
+git remote set-url origin https://github.com/user/repo.git
+git push  # Enter GitHub username + personal access token when prompted
+
+# Option 2: Push outside sandbox (recommended for sensitive repos)
+# Inside sandbox: make your commits
+# Exit sandbox, then:
+git push
+```
+
+**Why SSH is not supported:**
+
+SSH traffic cannot go through an HTTP proxy — it's a fundamentally different
+protocol. The sandbox's network isolation routes all traffic through the HTTP
+egress proxy for domain filtering and audit logging. Supporting SSH would require
+either:
+- Punching a hole in the network isolation (weakens security)
+- Adding a separate SSH proxy (complex, hard to audit)
+
+HTTPS with personal access tokens provides equivalent functionality with better
+audit visibility. GitHub, GitLab, and Bitbucket all support HTTPS push.
+
 
 ---
 
@@ -783,6 +844,31 @@ the local cache and start in under a second.
 ---
 
 ## Security Model
+
+### Threat Model
+
+This sandbox is designed primarily to defend against **prompt injection attacks** —
+malicious content in repositories, web pages, or user input that attempts to
+manipulate Claude into executing harmful commands or exfiltrating data.
+
+**The sandbox assumes Claude Code itself is not malicious.** It protects against:
+
+1. **Compromised context** — A poisoned README.md, code comment, or issue that
+   tricks Claude into `curl`ing secrets to an attacker's server
+2. **Credential exposure minimization** — Even if an attack partially succeeds,
+   blocking credential paths (SSH keys, git tokens, AWS creds) limits what can
+   be stolen
+3. **Network exfiltration** — Even if Claude is tricked into trying to send data,
+   the proxy blocks non-allowlisted domains and logs all attempts
+
+**What this does NOT protect against:**
+- If you intentionally give Claude access to credentials (by modifying the profile)
+- If Anthropic's servers are compromised
+- A deliberately adversarial AI that wanted to exfiltrate data — this sandbox
+  prevents accidents and prompt injection, not a superintelligent adversary
+
+The sandbox is **defense in depth**: multiple independent layers that an attacker
+must bypass simultaneously. No single layer is assumed to be perfect.
 
 ### What This Protects Against
 

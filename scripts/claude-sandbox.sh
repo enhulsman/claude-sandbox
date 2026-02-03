@@ -786,6 +786,23 @@ wget, or fetch from unlisted domains — it will fail silently or return
 a connection error. If you need a resource from a blocked domain,
 tell the user which URL you need and ask them to provide the content.
 
+## Git Operations
+
+Git credentials are blocked for security. Git read operations (log, diff, status,
+blame, show) work normally. Git write operations have restrictions:
+
+- **git commit**: Fails with "Please tell me who you are" unless the user provides
+  identity via GIT_AUTHOR_NAME/GIT_AUTHOR_EMAIL environment variables
+- **git push (HTTPS)**: Will prompt for credentials; user must enter manually
+- **git push (SSH)**: Not supported — SSH keys are blocked and SSH traffic cannot
+  go through the HTTP proxy
+
+If git operations fail, explain this to the user and suggest:
+1. For commits: Ask user to provide GIT_AUTHOR_NAME/EMAIL env vars
+2. For push: Ask user to push outside the sandbox, or enter HTTPS credentials manually
+
+Do NOT suggest workarounds involving SSH keys or credential files.
+
 ## Handling Restrictions
 
 When you encounter a "Permission denied", "No such file", or
