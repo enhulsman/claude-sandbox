@@ -179,6 +179,53 @@ Priority (highest to lowest): CLI flags > environment variables > defaults file 
 
 Override the defaults file path with `CLAUDE_SANDBOX_DEFAULTS`.
 
+### Headless Authentication (VPS, SSH)
+
+Claude Code's login requires a browser, which doesn't work on headless systems. The easiest solution is to copy credentials from a machine where you've already logged in.
+
+**Option 1: Copy credentials (recommended)**
+
+```bash
+# On the headless machine, create the config directory:
+mkdir -p ~/.claude
+chmod 700 ~/.claude
+
+# On your desktop/laptop (where Claude Code works):
+scp ~/.claude/.credentials.json headless:~/.claude/
+scp ~/.claude.json headless:~/
+```
+
+This copies your OAuth tokens and account binding. The sandbox mounts these files automatically.
+
+**Option 2: SSH port forwarding**
+
+Complete OAuth login on the headless machine by forwarding the callback port:
+
+```bash
+# On your local machine:
+ssh -L 8080:localhost:8080 user@headless
+
+# On the headless machine (in the SSH session):
+claude /login
+# Copy the URL and open it in your LOCAL browser
+```
+
+**Option 3: Token file (API key fallback)**
+
+If you have an API key (pay-as-you-go billing), create a token file:
+
+```bash
+cat > ~/.claude-sandbox-token <<'EOF'
+export ANTHROPIC_API_KEY="sk-ant-api03-..."
+EOF
+chmod 600 ~/.claude-sandbox-token
+```
+
+The sandbox automatically sources `~/.claude-sandbox-token` when it exists. Override the path:
+```bash
+export CLAUDE_SANDBOX_TOKEN_FILE=~/.config/claude-sandbox/token
+```
+
 ### Updating Claude Code
 
 Claude Code is bundled via [claude-code-nix](https://github.com/sadjow/claude-code-nix) (updated hourly). To get the latest version:
