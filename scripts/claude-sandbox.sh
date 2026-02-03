@@ -243,11 +243,11 @@ check_git_status() {
   echo "└──────────────────────────────────────────────────────────────┘"
 
   local choice
-  # 30s timeout to prevent indefinite hang
+  # 30s timeout - abort is the safe default (protects uncommitted work)
   if ! read -t 30 -rp "  Choice [1-4]: " choice; then
     echo ""
-    echo "Timeout. Continuing without commit."
-    return 0
+    echo "Timeout. Aborting (use --skip-git-check to bypass)."
+    exit 1
   fi
 
   case "$choice" in
