@@ -948,113 +948,116 @@ cleanup() {
       bash "$report_script" "$AUDIT_LOG" "$report_json" "$duration" "$PROFILE" "$WORKSPACE" 2>/dev/null || true
     fi
 
-    # Parse counts from audit log directly for terminal display
-    local blocked_count allowed_count total_count
-    blocked_count=$(grep -c "BLOCKED" "$AUDIT_LOG" 2>/dev/null | head -1 || true)
-    allowed_count=$(grep -c "ALLOWED" "$AUDIT_LOG" 2>/dev/null | head -1 || true)
-    blocked_count="${blocked_count:-0}"
-    allowed_count="${allowed_count:-0}"
-    total_count=$((allowed_count + blocked_count))
+    # Only show terminal session report for interactive Claude sessions, not --exec
+    if [[ ${#EXEC_CMD[@]} -eq 0 ]]; then
+      # Parse counts from audit log directly for terminal display
+      local blocked_count allowed_count total_count
+      blocked_count=$(grep -c "BLOCKED" "$AUDIT_LOG" 2>/dev/null | head -1 || true)
+      allowed_count=$(grep -c "ALLOWED" "$AUDIT_LOG" 2>/dev/null | head -1 || true)
+      blocked_count="${blocked_count:-0}"
+      allowed_count="${allowed_count:-0}"
+      total_count=$((allowed_count + blocked_count))
 
-    echo ""
-    echo "═══════════════════════════════════════════════════════════════"
-    echo "  Session Report ($SESSION_ID)"
-    echo "  Duration: $(format_duration "$duration") | Profile: $PROFILE"
-    echo ""
-    echo "  Network Activity"
-    echo "  ────────────────────────────────────────────────────────────"
-    echo "  Total: $total_count requests | Allowed: $allowed_count | Blocked: $blocked_count"
-
-    # Show top domains
-    if [[ $total_count -gt 0 ]]; then
       echo ""
-      echo "  Top domains:"
-      # Extract domain from both text and JSON formats
-      awk '
-        /^[0-9]{4}-[0-9]{2}-[0-9]{2}T/ && /ALLOWED/ {
-          # Text format: timestamp result method host[:port]
-          split($4, hp, ":")
-          domains[hp[1]]++
-        }
-        /^\{.*"result":"ALLOWED"/ {
-          # JSON format
-          if (match($0, /"host":"([^"]+)"/, m)) {
-            domains[m[1]]++
+      echo "═══════════════════════════════════════════════════════════════"
+      echo "  Session Report ($SESSION_ID)"
+      echo "  Duration: $(format_duration "$duration") | Profile: $PROFILE"
+      echo ""
+      echo "  Network Activity"
+      echo "  ────────────────────────────────────────────────────────────"
+      echo "  Total: $total_count requests | Allowed: $allowed_count | Blocked: $blocked_count"
+
+      # Show top domains
+      if [[ $total_count -gt 0 ]]; then
+        echo ""
+        echo "  Top domains:"
+        # Extract domain from both text and JSON formats
+        awk '
+          /^[0-9]{4}-[0-9]{2}-[0-9]{2}T/ && /ALLOWED/ {
+            # Text format: timestamp result method host[:port]
+            split($4, hp, ":")
+            domains[hp[1]]++
           }
-        }
-        END {
-          n = 0
-          for (d in domains) {
-            count[n] = domains[d]
-            name[n] = d
-            n++
-          }
-          # Simple bubble sort (top 5 is enough)
-          for (i = 0; i < n-1; i++) {
-            for (j = i+1; j < n; j++) {
-              if (count[j] > count[i]) {
-                tmp = count[i]; count[i] = count[j]; count[j] = tmp
-                tmp = name[i]; name[i] = name[j]; name[j] = tmp
-              }
+          /^\{.*"result":"ALLOWED"/ {
+            # JSON format
+            if (match($0, /"host":"([^"]+)"/, m)) {
+              domains[m[1]]++
             }
           }
-          for (i = 0; i < 5 && i < n; i++) {
-            printf "    %-30s %d requests\n", name[i], count[i]
+          END {
+            n = 0
+            for (d in domains) {
+              count[n] = domains[d]
+              name[n] = d
+              n++
+            }
+            # Simple bubble sort (top 5 is enough)
+            for (i = 0; i < n-1; i++) {
+              for (j = i+1; j < n; j++) {
+                if (count[j] > count[i]) {
+                  tmp = count[i]; count[i] = count[j]; count[j] = tmp
+                  tmp = name[i]; name[i] = name[j]; name[j] = tmp
+                }
+              }
+            }
+            for (i = 0; i < 5 && i < n; i++) {
+              printf "    %-30s %d requests\n", name[i], count[i]
+            }
           }
-        }
-      ' "$AUDIT_LOG" 2>/dev/null || true
-    fi
-
-    # Check for suspicious patterns and display warnings
-    if [[ -f "$report_json" ]]; then
-      # Extract risk info from JSON report
-      local risk_score risk_level
-      risk_score=$(grep -o '"risk_score": *[0-9]*' "$report_json" 2>/dev/null | grep -o '[0-9]*' || echo "0")
-      risk_level=$(grep -o '"risk_level": *"[^"]*"' "$report_json" 2>/dev/null | sed 's/.*"\([^"]*\)"/\1/' || echo "none")
-
-      # Show suspicious patterns if any
-      if [[ "$risk_score" -gt 0 ]]; then
-        echo ""
-        echo "  SUSPICIOUS PATTERNS"
-        echo "  ────────────────────────────────────────────────────────────"
-
-        # Parse and display suspicious items
-        # Extract JSON array content between "suspicious": [ and ]
-        sed -n '/"suspicious":/,/\]/p' "$report_json" 2>/dev/null | \
-          grep -o '"type":"[^"]*"' | sed 's/"type":"//;s/"//' | while read -r ptype; do
-            case "$ptype" in
-              repeated_blocks) echo "  [HIGH] Repeated attempts to blocked domain" ;;
-              high_block_rate) echo "  [MED]  Unusually high blocked request ratio" ;;
-              direct_ip_access) echo "  [LOW]  Direct IP access detected" ;;
-              port_scanning) echo "  [MED]  Multiple ports accessed on same IP" ;;
-              high_volume) echo "  [INFO] Unusually active session" ;;
-            esac
-          done
-
-        echo ""
-        local risk_label
-        case "$risk_level" in
-          high)   risk_label="HIGH" ;;
-          medium) risk_label="MEDIUM" ;;
-          low)    risk_label="LOW" ;;
-          *)      risk_label="NONE" ;;
-        esac
-        echo "  Risk Score: $risk_score/100 ($risk_label)"
+        ' "$AUDIT_LOG" 2>/dev/null || true
       fi
-    fi
 
-    # Show blocked requests if any
-    if [[ "$blocked_count" -gt 0 ]]; then
+      # Check for suspicious patterns and display warnings
+      if [[ -f "$report_json" ]]; then
+        # Extract risk info from JSON report
+        local risk_score risk_level
+        risk_score=$(grep -o '"risk_score": *[0-9]*' "$report_json" 2>/dev/null | grep -o '[0-9]*' || echo "0")
+        risk_level=$(grep -o '"risk_level": *"[^"]*"' "$report_json" 2>/dev/null | sed 's/.*"\([^"]*\)"/\1/' || echo "none")
+
+        # Show suspicious patterns if any
+        if [[ "$risk_score" -gt 0 ]]; then
+          echo ""
+          echo "  SUSPICIOUS PATTERNS"
+          echo "  ────────────────────────────────────────────────────────────"
+
+          # Parse and display suspicious items
+          # Extract JSON array content between "suspicious": [ and ]
+          sed -n '/"suspicious":/,/\]/p' "$report_json" 2>/dev/null | \
+            grep -o '"type":"[^"]*"' | sed 's/"type":"//;s/"//' | while read -r ptype; do
+              case "$ptype" in
+                repeated_blocks) echo "  [HIGH] Repeated attempts to blocked domain" ;;
+                high_block_rate) echo "  [MED]  Unusually high blocked request ratio" ;;
+                direct_ip_access) echo "  [LOW]  Direct IP access detected" ;;
+                port_scanning) echo "  [MED]  Multiple ports accessed on same IP" ;;
+                high_volume) echo "  [INFO] Unusually active session" ;;
+              esac
+            done
+
+          echo ""
+          local risk_label
+          case "$risk_level" in
+            high)   risk_label="HIGH" ;;
+            medium) risk_label="MEDIUM" ;;
+            low)    risk_label="LOW" ;;
+            *)      risk_label="NONE" ;;
+          esac
+          echo "  Risk Score: $risk_score/100 ($risk_label)"
+        fi
+      fi
+
+      # Show blocked requests if any
+      if [[ "$blocked_count" -gt 0 ]]; then
+        echo ""
+        echo "  Blocked requests (review these):"
+        grep "BLOCKED" "$AUDIT_LOG" 2>/dev/null | tail -5 | sed 's/^/     /'
+      fi
+
       echo ""
-      echo "  Blocked requests (review these):"
-      grep "BLOCKED" "$AUDIT_LOG" 2>/dev/null | tail -5 | sed 's/^/     /'
-    fi
-
-    echo ""
-    echo "  Session files:"
-    echo "    Report: $report_json"
-    echo "    Audit:  $AUDIT_LOG"
-    echo "═══════════════════════════════════════════════════════════════"
+      echo "  Session files:"
+      echo "    Report: $report_json"
+      echo "    Audit:  $AUDIT_LOG"
+      echo "═══════════════════════════════════════════════════════════════"
+    fi  # end of: if [[ ${#EXEC_CMD[@]} -eq 0 ]]
   fi
 
   exit "$exit_code"
