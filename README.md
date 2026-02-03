@@ -418,16 +418,28 @@ Each session creates a unique directory for its logs and context:
 
 The session ID is shown in the startup banner.
 
-### Session Cleanup
+### Session Management
 
-Remove old sessions:
+List and manage sessions with the `sessions` subcommand:
 
 ```bash
-# Remove sessions older than 30 days (default)
-claude-sandbox --clean-sessions
+# List all sessions
+cs sessions
+
+# Interactive cleanup (shows options)
+cs sessions clean
 
 # Remove sessions older than 7 days
-claude-sandbox --clean-sessions 7
+cs sessions clean --days 7
+
+# Remove the 3 oldest sessions
+cs sessions clean --oldest 3
+
+# Remove all sessions (except current)
+cs sessions clean --all
+
+# Skip confirmation prompt
+cs sessions clean --days 7 --yes
 ```
 
 ### Enhanced Session Reports
@@ -631,6 +643,7 @@ claude-sandbox/
 
 ```
 claude-sandbox [OPTIONS] [-- CLAUDE_ARGS...]
+claude-sandbox sessions [list|clean] [OPTIONS]
 
 Options:
   --profile PROFILE     Security profile (default: dev)
@@ -641,9 +654,16 @@ Options:
   --shell               Shortcut for --exec bash (interactive shell in sandbox)
   --yolo                Pass --dangerously-skip-permissions to Claude Code
   --skip-git-check      Skip uncommitted changes check (dev profile only)
-  --clean-sessions N    Remove session directories older than N days (default: 30)
   --dry-run             Show what would be done without executing
   -h, --help            Show help
+
+Subcommands:
+  sessions              List all sessions (alias: sessions list)
+  sessions clean        Interactive session cleanup
+    --days N            Remove sessions older than N days
+    --oldest N          Remove the N oldest sessions
+    --all               Remove all sessions (except current)
+    --yes               Skip confirmation prompt
 
 Examples:
   claude-sandbox --profile dev                                # interactive Claude Code
@@ -653,7 +673,9 @@ Examples:
   claude-sandbox --profile dev --shell                        # interactive shell
   claude-sandbox --profile dev --exec cat /etc/shadow         # test if file is blocked
   claude-sandbox --profile dev --skip-git-check               # skip uncommitted warning
-  claude-sandbox --clean-sessions 7                           # cleanup old sessions
+  claude-sandbox sessions                                     # list all sessions
+  claude-sandbox sessions clean --days 7                      # cleanup old sessions
+  claude-sandbox sessions clean --oldest 3                    # remove 3 oldest
 
 Environment Variables:
   CLAUDE_SANDBOX_PROFILE    Default profile

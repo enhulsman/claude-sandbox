@@ -66,6 +66,7 @@ usage() {
   cat <<'EOF'
 Usage: claude-sandbox [OPTIONS] [-- CLAUDE_ARGS...]
        claude-sandbox --exec COMMAND [ARGS...]
+       claude-sandbox sessions [list|clean] [OPTIONS]
 
 Options:
   --profile PROFILE   Security profile (default: dev)
@@ -76,9 +77,16 @@ Options:
   --yolo              Pass --dangerously-skip-permissions to Claude Code
                       (safe when using the external sandbox as the boundary)
   --skip-git-check    Skip uncommitted changes check (dev profile only)
-  --clean-sessions N  Remove session directories older than N days (default: 30)
   --dry-run           Show what would be done without executing
   -h, --help          Show this help
+
+Subcommands:
+  sessions            List all sessions (alias: sessions list)
+  sessions clean      Interactive session cleanup
+    --days N          Remove sessions older than N days
+    --oldest N        Remove the N oldest sessions
+    --all             Remove all sessions
+    --yes             Skip confirmation prompt
 
 Profiles:
   nixos-admin    Read /etc/nixos, /var/log, /nix — for system diagnosis
@@ -93,10 +101,331 @@ Examples:
   claude-sandbox --profile dev --shell                      # same as above
   claude-sandbox --profile dev --exec bash verify.sh        # run a script
   claude-sandbox --profile strict -- -p "audit this repo"
-  claude-sandbox --clean-sessions 7                         # cleanup old sessions
+  claude-sandbox sessions                                   # list sessions
+  claude-sandbox sessions clean --days 7                    # cleanup old sessions
+  claude-sandbox sessions clean --oldest 5                  # remove 5 oldest
 EOF
   exit 0
 }
+
+# ── Sessions Subcommand ───────────────────────────────────────
+sessions_cmd() {
+  local sessions_dir="$WORKSPACE/.sessions"
+  local action="${1:-list}"
+  shift || true
+
+  # Ensure workspace exists
+  mkdir -p "$WORKSPACE"
+
+  # Parse clean subcommand options
+  local days="" oldest="" all=0 yes=0
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --days)   days="$2"; shift 2 ;;
+      --oldest) oldest="$2"; shift 2 ;;
+      --all)    all=1; shift ;;
+      --yes|-y) yes=1; shift ;;
+      -h|--help) sessions_usage; exit 0 ;;
+      list)     action="list"; shift ;;
+      clean)    action="clean"; shift ;;
+      *)        echo "Unknown option: $1" >&2; sessions_usage; exit 1 ;;
+    esac
+  done
+
+  case "$action" in
+    list)  sessions_list "$sessions_dir" ;;
+    clean) sessions_clean "$sessions_dir" "$days" "$oldest" "$all" "$yes" ;;
+    *)     echo "Unknown action: $action" >&2; sessions_usage; exit 1 ;;
+  esac
+}
+
+sessions_usage() {
+  cat <<'EOF'
+Usage: claude-sandbox sessions [list|clean] [OPTIONS]
+
+Commands:
+  list              List all sessions (default)
+  clean             Clean up old sessions
+
+Clean options:
+  --days N          Remove sessions older than N days
+  --oldest N        Remove the N oldest sessions
+  --all             Remove all sessions
+  --yes, -y         Skip confirmation prompt
+
+Examples:
+  claude-sandbox sessions                    # list all sessions
+  claude-sandbox sessions list               # same as above
+  claude-sandbox sessions clean              # interactive cleanup
+  claude-sandbox sessions clean --days 7     # remove older than 7 days
+  claude-sandbox sessions clean --oldest 3   # remove 3 oldest sessions
+  claude-sandbox sessions clean --all --yes  # remove all without prompting
+EOF
+}
+
+sessions_list() {
+  local sessions_dir="$1"
+
+  if [[ ! -d "$sessions_dir" ]]; then
+    echo "No sessions found."
+    echo "Sessions directory: $sessions_dir"
+    return 0
+  fi
+
+  # Get current session symlink target
+  local current=""
+  if [[ -L "$sessions_dir/current" ]]; then
+    current=$(readlink "$sessions_dir/current")
+  fi
+
+  # Collect session info
+  local total_size=0 count=0
+  local sessions=()
+
+  while IFS= read -r -d '' dir; do
+    local name=$(basename "$dir")
+    local size=$(du -sh "$dir" 2>/dev/null | cut -f1)
+    local size_bytes=$(du -sb "$dir" 2>/dev/null | cut -f1)
+    local mtime=$(stat -c %Y "$dir" 2>/dev/null || stat -f %m "$dir" 2>/dev/null)
+    local age=$(( ($(date +%s) - mtime) / 86400 ))
+    local age_str
+    if [[ $age -eq 0 ]]; then
+      age_str="today"
+    elif [[ $age -eq 1 ]]; then
+      age_str="1 day ago"
+    else
+      age_str="$age days ago"
+    fi
+
+    local marker=""
+    [[ "$name" == "$current" ]] && marker=" (current)"
+
+    sessions+=("$mtime|$name|$age_str|$size|$marker")
+    total_size=$((total_size + size_bytes))
+    ((count++))
+  done < <(find "$sessions_dir" -maxdepth 1 -type d -name "[0-9]*-[0-9]*" -print0 2>/dev/null | sort -z)
+
+  if [[ $count -eq 0 ]]; then
+    echo "No sessions found."
+    echo "Sessions directory: $sessions_dir"
+    return 0
+  fi
+
+  # Format total size
+  local total_size_h
+  if [[ $total_size -gt 1073741824 ]]; then
+    total_size_h="$(echo "scale=1; $total_size / 1073741824" | bc)G"
+  elif [[ $total_size -gt 1048576 ]]; then
+    total_size_h="$(echo "scale=1; $total_size / 1048576" | bc)M"
+  elif [[ $total_size -gt 1024 ]]; then
+    total_size_h="$(echo "scale=1; $total_size / 1024" | bc)K"
+  else
+    total_size_h="${total_size}B"
+  fi
+
+  echo ""
+  echo "Sessions in $sessions_dir/"
+  echo "────────────────────────────────────────────────────────────"
+  printf "  %-25s %-15s %8s\n" "SESSION" "AGE" "SIZE"
+  echo "────────────────────────────────────────────────────────────"
+
+  # Sort by mtime (oldest first) and display
+  for entry in $(printf '%s\n' "${sessions[@]}" | sort -t'|' -k1 -n); do
+    IFS='|' read -r _ name age_str size marker <<< "$entry"
+    printf "  %-25s %-15s %8s%s\n" "$name" "$age_str" "$size" "$marker"
+  done
+
+  echo "────────────────────────────────────────────────────────────"
+  echo "  $count session(s), $total_size_h total"
+  echo ""
+}
+
+sessions_clean() {
+  local sessions_dir="$1"
+  local days="$2"
+  local oldest="$3"
+  local all="$4"
+  local yes="$5"
+
+  if [[ ! -d "$sessions_dir" ]]; then
+    echo "No sessions to clean."
+    return 0
+  fi
+
+  # SECURITY: Sanity check path
+  if [[ ! "$sessions_dir" =~ ^$HOME/[^/]+/\.sessions$ && ! "$sessions_dir" =~ ^$HOME/claude-workspace/\.sessions$ ]]; then
+    echo "ERROR: Sessions directory outside expected path: $sessions_dir" >&2
+    return 1
+  fi
+
+  # Get current session to protect it
+  local current=""
+  if [[ -L "$sessions_dir/current" ]]; then
+    current=$(readlink "$sessions_dir/current")
+  fi
+
+  # Collect all sessions sorted by mtime (oldest first)
+  local sessions=()
+  while IFS= read -r -d '' dir; do
+    local name=$(basename "$dir")
+    local mtime=$(stat -c %Y "$dir" 2>/dev/null || stat -f %m "$dir" 2>/dev/null)
+    sessions+=("$mtime|$name|$dir")
+  done < <(find "$sessions_dir" -maxdepth 1 -type d -name "[0-9]*-[0-9]*" -print0 2>/dev/null)
+
+  # Sort by mtime
+  IFS=$'\n' sessions=($(printf '%s\n' "${sessions[@]}" | sort -t'|' -k1 -n))
+  unset IFS
+
+  local total=${#sessions[@]}
+  if [[ $total -eq 0 ]]; then
+    echo "No sessions to clean."
+    return 0
+  fi
+
+  # Determine which sessions to remove
+  local to_remove=()
+
+  if [[ "$all" == "1" ]]; then
+    # Remove all (except current)
+    for entry in "${sessions[@]}"; do
+      IFS='|' read -r _ name dir <<< "$entry"
+      [[ "$name" != "$current" ]] && to_remove+=("$dir")
+    done
+  elif [[ -n "$oldest" ]]; then
+    # Remove N oldest (except current)
+    local count=0
+    for entry in "${sessions[@]}"; do
+      [[ $count -ge $oldest ]] && break
+      IFS='|' read -r _ name dir <<< "$entry"
+      if [[ "$name" != "$current" ]]; then
+        to_remove+=("$dir")
+        ((count++))
+      fi
+    done
+  elif [[ -n "$days" ]]; then
+    # Remove older than N days (except current)
+    local cutoff=$(($(date +%s) - days * 86400))
+    for entry in "${sessions[@]}"; do
+      IFS='|' read -r mtime name dir <<< "$entry"
+      if [[ $mtime -lt $cutoff && "$name" != "$current" ]]; then
+        to_remove+=("$dir")
+      fi
+    done
+  else
+    # Interactive mode
+    sessions_list "$sessions_dir"
+    sessions_clean_interactive "$sessions_dir" "$current" "${sessions[@]}"
+    return $?
+  fi
+
+  local remove_count=${#to_remove[@]}
+  if [[ $remove_count -eq 0 ]]; then
+    echo "No sessions match the criteria."
+    return 0
+  fi
+
+  # Calculate size to be freed
+  local remove_size=0
+  for dir in "${to_remove[@]}"; do
+    local size_bytes=$(du -sb "$dir" 2>/dev/null | cut -f1)
+    remove_size=$((remove_size + size_bytes))
+  done
+  local remove_size_h
+  if [[ $remove_size -gt 1048576 ]]; then
+    remove_size_h="$(echo "scale=1; $remove_size / 1048576" | bc)M"
+  elif [[ $remove_size -gt 1024 ]]; then
+    remove_size_h="$(echo "scale=1; $remove_size / 1024" | bc)K"
+  else
+    remove_size_h="${remove_size}B"
+  fi
+
+  echo "Will remove $remove_count session(s) ($remove_size_h)"
+
+  # Confirm unless --yes
+  if [[ "$yes" != "1" ]]; then
+    read -rp "Proceed? [y/N]: " confirm
+    if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
+      echo "Cancelled."
+      return 0
+    fi
+  fi
+
+  # Remove sessions
+  for dir in "${to_remove[@]}"; do
+    rm -rf "$dir"
+  done
+
+  echo "Removed $remove_count session(s) ($remove_size_h freed)."
+}
+
+sessions_clean_interactive() {
+  local sessions_dir="$1"
+  local current="$2"
+  shift 2
+  local sessions=("$@")
+
+  local total=${#sessions[@]}
+  local now=$(date +%s)
+
+  # Calculate what each option would remove
+  local d7_count=0 d7_size=0
+  local d14_count=0 d14_size=0
+  local d30_count=0 d30_size=0
+  local all_count=0 all_size=0
+
+  for entry in "${sessions[@]}"; do
+    IFS='|' read -r mtime name dir <<< "$entry"
+    [[ "$name" == "$current" ]] && continue
+
+    local size_bytes=$(du -sb "$dir" 2>/dev/null | cut -f1)
+    local age_days=$(( (now - mtime) / 86400 ))
+
+    ((all_count++)); all_size=$((all_size + size_bytes))
+    [[ $age_days -ge 7 ]]  && { ((d7_count++));  d7_size=$((d7_size + size_bytes)); }
+    [[ $age_days -ge 14 ]] && { ((d14_count++)); d14_size=$((d14_size + size_bytes)); }
+    [[ $age_days -ge 30 ]] && { ((d30_count++)); d30_size=$((d30_size + size_bytes)); }
+  done
+
+  # Format sizes
+  format_size() {
+    local bytes=$1
+    if [[ $bytes -gt 1048576 ]]; then
+      echo "$(echo "scale=1; $bytes / 1048576" | bc)M"
+    elif [[ $bytes -gt 1024 ]]; then
+      echo "$(echo "scale=1; $bytes / 1024" | bc)K"
+    else
+      echo "${bytes}B"
+    fi
+  }
+
+  echo "Remove sessions older than:"
+  echo "  [1] 7 days   ($d7_count session(s), $(format_size $d7_size))"
+  echo "  [2] 14 days  ($d14_count session(s), $(format_size $d14_size))"
+  echo "  [3] 30 days  ($d30_count session(s), $(format_size $d30_size))"
+  echo "  [4] all      ($all_count session(s), $(format_size $all_size))"
+  echo "  [5] cancel"
+  echo ""
+
+  local choice
+  read -rp "Choice [1-5]: " choice
+
+  case "$choice" in
+    1) sessions_clean "$sessions_dir" "7" "" "0" "1" ;;
+    2) sessions_clean "$sessions_dir" "14" "" "0" "1" ;;
+    3) sessions_clean "$sessions_dir" "30" "" "0" "1" ;;
+    4) sessions_clean "$sessions_dir" "" "" "1" "1" ;;
+    5) echo "Cancelled."; return 0 ;;
+    *) echo "Invalid choice."; return 1 ;;
+  esac
+}
+
+# ── Handle Subcommands ────────────────────────────────────────
+# Check for subcommands before main argument parsing
+if [[ "${1:-}" == "sessions" ]]; then
+  shift
+  sessions_cmd "$@"
+  exit $?
+fi
 
 # ── Parse Arguments ───────────────────────────────────────────
 CLAUDE_ARGS=()
@@ -104,7 +433,6 @@ EXEC_CMD=()
 DRY_RUN=0
 YOLO=0
 SKIP_GIT_CHECK=0
-CLEAN_SESSIONS=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -114,14 +442,6 @@ while [[ $# -gt 0 ]]; do
     --dry-run)   DRY_RUN=1; shift ;;
     --yolo)      YOLO=1; shift ;;
     --skip-git-check) SKIP_GIT_CHECK=1; shift ;;
-    --clean-sessions)
-      # Accept optional numeric argument
-      if [[ "${2:-}" =~ ^[0-9]+$ ]]; then
-        CLEAN_SESSIONS="$2"; shift 2
-      else
-        CLEAN_SESSIONS="30"; shift
-      fi
-      ;;
     --shell)     EXEC_CMD=("bash"); break ;;
     --exec)      shift; EXEC_CMD=("$@"); break ;;
     -h|--help)   usage ;;
@@ -133,34 +453,6 @@ done
 # Apply default YOLO if not set via CLI flag
 if [[ "$YOLO" == "0" && "$_CS_DEFAULT_YOLO" == "1" ]]; then
   YOLO=1
-fi
-
-# ── Session Cleanup Command ───────────────────────────────────
-clean_old_sessions() {
-  local days="${1:-30}"
-  local sessions_dir="$WORKSPACE/.sessions"
-  [[ -d "$sessions_dir" ]] || { echo "No sessions directory found."; return 0; }
-
-  # SECURITY: Sanity check path to prevent deletion of unintended directories
-  if [[ ! "$sessions_dir" =~ ^$HOME/[^/]+/\.sessions$ && ! "$sessions_dir" =~ ^$HOME/claude-workspace/\.sessions$ ]]; then
-    echo "ERROR: Sessions directory outside expected path: $sessions_dir" >&2
-    return 1
-  fi
-
-  echo "Cleaning sessions older than $days days from $sessions_dir..."
-  local count=0
-  while IFS= read -r -d '' dir; do
-    rm -rf "$dir"
-    ((count++)) || true
-  done < <(find "$sessions_dir" -maxdepth 1 -type d -name "[0-9]*-[0-9]*" -mtime "+$days" -print0 2>/dev/null)
-  echo "Removed $count old session(s)."
-}
-
-# Handle --clean-sessions if specified
-if [[ -n "$CLEAN_SESSIONS" ]]; then
-  mkdir -p "$WORKSPACE"
-  clean_old_sessions "$CLEAN_SESSIONS"
-  exit 0
 fi
 
 # ── Pre-Session Git Check (Dev Profile Only) ──────────────────
