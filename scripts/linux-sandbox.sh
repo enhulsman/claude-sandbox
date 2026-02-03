@@ -211,7 +211,7 @@ case "$(basename "$CLAUDE_TREE")" in
   versions|node_modules) CLAUDE_TREE="$(dirname "$CLAUDE_TREE")" ;;
 esac
 case "$CLAUDE_TREE" in
-  /usr/*|/bin/*|/lib/*|/nix/*) ;;
+  /usr/*|/bin/*|/lib/*|/nix/*|.) ;;  # Skip system paths and "." (shell builtins)
   *) [[ -d "$CLAUDE_TREE" ]] && BWRAP_ARGS+=(--ro-bind "$CLAUDE_TREE" "$CLAUDE_TREE") ;;
 esac
 
