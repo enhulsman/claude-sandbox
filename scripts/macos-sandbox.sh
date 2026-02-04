@@ -84,15 +84,37 @@ SEOF
   echo "" >> "$SB_PROFILE"
 fi
 
-# ── Set proxy environment variables ───────────────────────────
-# On macOS, Seatbelt restricts network to localhost:PROXY_PORT.
-# We use HTTP_PROXY to route Claude's requests through our proxy.
-export HTTP_PROXY="http://127.0.0.1:${_CS_PROXY_PORT}"
-export HTTPS_PROXY="http://127.0.0.1:${_CS_PROXY_PORT}"
-export ALL_PROXY="http://127.0.0.1:${_CS_PROXY_PORT}"
-export NO_PROXY=""
+# ── Environment isolation: build clean env array ─────────────
+_ENV_ARGS=(
+  HOME="$HOME"
+  USER="${USER:-claude}"
+  LANG="${LANG:-C.UTF-8}"
+  TERM="${TERM:-xterm-256color}"
+  TMPDIR="/tmp"
+  PATH="$PATH"
+  HTTP_PROXY="http://127.0.0.1:${_CS_PROXY_PORT}"
+  HTTPS_PROXY="http://127.0.0.1:${_CS_PROXY_PORT}"
+  ALL_PROXY="http://127.0.0.1:${_CS_PROXY_PORT}"
+  NO_PROXY=""
+  CLAUDE_SANDBOX_WORKSPACE="${_CS_WORKSPACE:-}"
+)
+
+# XDG dirs if set
+[[ -n "${XDG_CONFIG_HOME:-}" ]] && _ENV_ARGS+=(XDG_CONFIG_HOME="$XDG_CONFIG_HOME")
+[[ -n "${XDG_DATA_HOME:-}" ]] && _ENV_ARGS+=(XDG_DATA_HOME="$XDG_DATA_HOME")
+[[ -n "${XDG_CACHE_HOME:-}" ]] && _ENV_ARGS+=(XDG_CACHE_HOME="$XDG_CACHE_HOME")
+
+# Auth tokens if set
+[[ -n "${ANTHROPIC_API_KEY:-}" ]] && _ENV_ARGS+=(ANTHROPIC_API_KEY="$ANTHROPIC_API_KEY")
+[[ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]] && _ENV_ARGS+=(CLAUDE_CODE_OAUTH_TOKEN="$CLAUDE_CODE_OAUTH_TOKEN")
+
+# Profile-configured passthrough vars
+readarray -t PASSTHROUGH_ENV <<< "${_CS_PASSTHROUGH_ENV:-}"
+for var in "${PASSTHROUGH_ENV[@]}"; do
+  [[ -n "$var" && -n "${!var:-}" ]] && _ENV_ARGS+=("$var=${!var}")
+done
 
 echo "  Launching Claude Code in Seatbelt sandbox..."
 echo "  Seatbelt profile: $SB_PROFILE"
 echo ""
-exec sandbox-exec -f "$SB_PROFILE" "$_CS_CLAUDE_BIN" "$@"
+exec env -i "${_ENV_ARGS[@]}" sandbox-exec -f "$SB_PROFILE" "$_CS_CLAUDE_BIN" "$@"

@@ -92,3 +92,48 @@ Defined entirely in `flake.nix`. The egress proxy uses only Python stdlib (no ex
 ## Testing
 
 `scripts/verify.sh` tests filesystem isolation (SSH keys, /etc/shadow, GPG, AWS creds blocked), network isolation (ping, non-allowed domains, DNS exfiltration), and privilege escalation (sudo, remount, user creation). Tests are platform-aware and skip Linux-specific checks on macOS.
+
+## Security Considerations
+
+### Network Access Warning
+
+Allowed domains have **full bidirectional access** (GET, POST, PUT, DELETE) over HTTPS.
+The proxy cannot filter HTTP methods inside TLS tunnels — HTTPS uses CONNECT tunneling
+where the proxy only sees encrypted bytes after the connection is established.
+
+**If you allow a domain, assume Claude can POST data to it.**
+
+### MCP Security
+
+MCPs (Model Context Protocol servers) run as separate processes on the **HOST**, not inside the sandbox:
+- MCPs can access the network directly (bypassing the egress proxy)
+- MCPs can read files blocked by the sandbox
+- MCPs may fail if their required env vars aren't in the passthrough list
+
+**Recommendations:**
+- Avoid MCPs in high-security scenarios
+- If using MCPs, add required vars to `[profile.*.environment.passthrough]`
+- Audit MCP code before trusting it
+
+### Git Security
+
+Git configuration (~/.gitconfig) is readable inside the sandbox for normal operations.
+
+**Security implications:**
+- SSH remotes (`git@github.com:...`) are safe — SSH keys are blocked
+- HTTPS remotes with embedded tokens (`https://TOKEN@github.com/...`) are readable
+
+Check your remotes: `git remote -v`
+
+### macOS Security Note
+
+We attempt to protect `~/.claude/settings.json` via Seatbelt's `(deny file-write*)`,
+but Seatbelt's literal matching has quirks and may not be 100% reliable. For maximum
+security on macOS, audit settings.json after high-risk sessions, or use Linux for
+security-critical work.
+
+### settings.json Protection
+
+The file `~/.claude/settings.json` contains security-critical deny rules that control
+what Claude Code is allowed to do. On Linux, this file is mounted read-only inside
+the sandbox to prevent prompt injection attacks from removing deny rules.
