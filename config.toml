@@ -68,7 +68,6 @@ allowed_domains = [
     "api.anthropic.com",
     "platform.claude.com",
     "raw.githubusercontent.com",
-    "sentry.io",
     "statsig.anthropic.com",
     "docs.claude.com",
 ]
@@ -124,19 +123,55 @@ writable = [
 
 [profile.dev.network]
 allowed_domains = [
+    # Anthropic (required)
     "api.anthropic.com",
     "platform.claude.com",
-    "raw.githubusercontent.com",
-    "sentry.io",
     "statsig.anthropic.com",
-    "registry.npmjs.org",
-    "pypi.org",
-    "files.pythonhosted.org",
+    "docs.claude.com",
+    "support.anthropic.com",
+
+    # GitHub
     "github.com",
+    "raw.githubusercontent.com",
+    "docs.github.com",
+
+    # Rust
     "crates.io",
     "index.crates.io",
     "static.crates.io",
-    "docs.claude.com",
+    "doc.rust-lang.org",
+    "docs.rs",
+    "rust-lang.org",
+
+    # Nix/NixOS
+    "nixos.org",
+    "nixos.wiki",
+    "wiki.nixos.org",
+    "nix.dev",
+    "search.nixos.org",
+
+    # Python
+    "pypi.org",
+    "files.pythonhosted.org",
+    "docs.python.org",
+    "readthedocs.io",
+    "*.readthedocs.io",
+
+    # Node/JS
+    "registry.npmjs.org",
+
+    # Linux docs
+    "wiki.archlinux.org",
+    "man7.org",
+    "kernel.org",
+
+    # General reference
+    "stackoverflow.com",
+    "en.wikipedia.org",
+
+    # Project-specific
+    "rustdesk.com",
+
     # Personal dev domains
     "hulsman.dev",
     "*.hulsman.dev",
@@ -174,7 +209,6 @@ writable = [
 allowed_domains = [
     "api.anthropic.com",
     "platform.claude.com",
-    "sentry.io",
     "statsig.anthropic.com",
 ]
 
@@ -225,7 +259,6 @@ writable = [
 [profile.macos-admin.network]
 allowed_domains = [
     "api.anthropic.com",
-    "sentry.io",
     "statsig.anthropic.com",
 ]
 
