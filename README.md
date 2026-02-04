@@ -5,8 +5,26 @@ A cross-platform, defense-in-depth sandbox for running Claude Code safely on
 configuration.
 
 ```
-nix run github:enhulsman/claude-sandbox -- --profile dev -- -p "review this code"
+nix run github:enhulsman/claude-sandbox
 ```
+
+---
+
+## Table of Contents
+
+- [What This Does](#what-this-does)
+- [Why an External Sandbox](#why-an-external-sandbox)
+- [Quick Start](#quick-start)
+- [Profiles](#profiles)
+- [Human Workflow](#human-workflow)
+- [Session Automation](#session-automation)
+- [How It Works](#how-it-works)
+- [Verification](#verification)
+- [Options Reference](#options-reference)
+- [Troubleshooting](#troubleshooting)
+- [Security Model](#security-model)
+
+**New here?** Start with [Quick Start](#quick-start) to get running in under 5 minutes. You'll need to authenticate Claude Code once before using the sandbox. Check [Security Model](#security-model) to understand what this protects against (and what it doesn't). If you're customizing access, see [Profiles](#profiles).
 
 ---
 
@@ -922,6 +940,8 @@ must bypass simultaneously. No single layer is assumed to be perfect.
 | Threat | Protection |
 |--------|-----------|
 | Prompt injection → secret exfiltration | Blocked paths prevent reading; proxy blocks non-allowed domains |
+| Prompt injection → env var leakage | `--clearenv` blocks parent environment; only whitelisted vars pass through |
+| Prompt injection → disable deny rules | `settings.json` mounted read-only (Linux) |
 | Prompt injection → reverse shell | Network namespace (Linux) or Seatbelt deny (macOS) blocks outbound |
 | Prompt injection → arbitrary file write | Write restricted to workspace only |
 | Approval fatigue | Sandbox auto-allows within boundaries; fewer prompts = less fatigue |
@@ -935,12 +955,13 @@ must bypass simultaneously. No single layer is assumed to be perfect.
 | Risk | Why | Mitigation |
 |------|-----|-----------|
 | Data sent to Anthropic API | Required for Claude to function | Block secrets with deny rules |
+| Data POSTed to allowed domains | HTTPS uses CONNECT tunneling; proxy can't inspect encrypted traffic | Only allow domains you fully trust |
 | Social engineering (you approve bad command) | Human problem | Read the workflow section above |
 | Anthropic data breach | Outside your control | Don't expose secrets to Claude |
 | Zero-day in bubblewrap/Seatbelt | Kernel-level bug | Defense in depth; monitor for patches |
 | Claude Code auto-update changing behavior | npm update | Pin your Claude Code version |
 
-### Defense Layers (13 independent)
+### Defense Layers (15 independent)
 
 | # | Layer | Mechanism |
 |---|-------|-----------|
@@ -952,11 +973,13 @@ must bypass simultaneously. No single layer is assumed to be perfect.
 | 6 | Blocked paths | Secrets bound to /dev/null or Seatbelt deny |
 | 7 | Read-only mounts (`/etc`, `/usr`, `/nix`) | System paths cannot be modified |
 | 8 | Writable workspace only | Changes contained to review directory |
-| 9 | Ephemeral /tmp | No session persistence |
-| 10 | Audit logging | Every request recorded for review |
-| 11 | Propose-review-apply workflow | Human gate before system changes |
-| 12 | Session hygiene | Fresh sessions prevent context pollution |
-| 13 | Nix reproducibility | Pinned deps, no supply chain drift |
+| 9 | Environment isolation | `--clearenv` prevents env var leakage |
+| 10 | settings.json protection | Read-only mount prevents deny rule tampering |
+| 11 | Ephemeral /tmp | No session persistence |
+| 12 | Audit logging | Every request recorded for review |
+| 13 | Propose-review-apply workflow | Human gate before system changes |
+| 14 | Session hygiene | Fresh sessions prevent context pollution |
+| 15 | Nix reproducibility | Pinned deps, no supply chain drift |
 
 No single layer is sufficient. Together, an attacker must bypass multiple
 independent mechanisms simultaneously.
