@@ -19,6 +19,7 @@ set -euo pipefail
 readarray -t READ_ONLY_PATHS <<< "$_CS_READ_ONLY_PATHS"
 readarray -t BLOCKED_PATHS   <<< "$_CS_BLOCKED_PATHS"
 readarray -t WRITABLE_PATHS  <<< "$_CS_WRITABLE_PATHS"
+readarray -t PASSTHROUGH_ENV <<< "${_CS_PASSTHROUGH_ENV:-}"
 
 # ── Set up socat bridge (host side) ──────────────────────────
 # bubblewrap's --unshare-net creates a completely empty network namespace.
@@ -167,6 +168,15 @@ BWRAP_ARGS+=(
 )
 BASE_MOUNTS+=(/proc /dev /tmp)
 
+# Home directory structure for bind mounts
+# bwrap requires parent directories to exist before mounting inside them.
+# Create /home as tmpfs, then user's home dir inside it.
+# Actual home contents come from selective bind mounts below.
+# NOTE: We don't add $HOME to BASE_MOUNTS because we DO want to mount
+# things inside it (like ~/.gitconfig). Only /home is "base".
+BWRAP_ARGS+=(--tmpfs /home)
+BWRAP_ARGS+=(--dir "$HOME")
+
 # --- Profile: read-only mounts ---
 # Skip paths that are already covered by base mounts (exact match or sub-path).
 # These are redundant, and on NixOS re-mounting symlinks (like /etc/hosts)
@@ -245,7 +255,21 @@ fi
 CLAUDE_CONFIG="${HOME}/.claude"
 CLAUDE_CONFIG_ALT="${HOME}/.config/claude"
 CLAUDE_JSON="${HOME}/.claude.json"
+SETTINGS_FILE="${HOME}/.claude/settings.json"
+
+# Ensure settings.json exists on HOST (prevents creation inside sandbox)
+# This file contains security-critical deny rules that must be protected
+if [[ ! -d "$CLAUDE_CONFIG" ]]; then
+  mkdir -p "$CLAUDE_CONFIG" 2>/dev/null || true
+fi
+if [[ -d "$CLAUDE_CONFIG" && ! -f "$SETTINGS_FILE" ]]; then
+  echo '{}' > "$SETTINGS_FILE" 2>/dev/null || true
+fi
+
 [[ -d "$CLAUDE_CONFIG" ]]     && BWRAP_ARGS+=(--bind "$CLAUDE_CONFIG" "$CLAUDE_CONFIG")
+# Protect settings.json from modification (must come AFTER the ~/.claude bind)
+# This prevents prompt injection from removing deny rules
+[[ -f "$SETTINGS_FILE" ]]     && BWRAP_ARGS+=(--ro-bind "$SETTINGS_FILE" "$SETTINGS_FILE")
 [[ -d "$CLAUDE_CONFIG_ALT" ]] && BWRAP_ARGS+=(--bind "$CLAUDE_CONFIG_ALT" "$CLAUDE_CONFIG_ALT")
 # ~/.claude.json holds oauthAccount binding (accountUuid, organizationUuid).
 # Without it, interactive mode can't identify the user and shows the login screen.
@@ -263,22 +287,35 @@ BWRAP_ARGS+=(
   --ro-bind "$SOCKET_DIR" /run/sandbox
 )
 
-# --- Environment ---
+# ── Environment isolation: clear all, then whitelist ─────────
+BWRAP_ARGS+=(--clearenv)
+
 BWRAP_ARGS+=(
   --setenv HOME   "$HOME"
   --setenv USER   "${USER:-claude}"
   --setenv LANG   "${LANG:-C.UTF-8}"
   --setenv TERM   "${TERM:-xterm-256color}"
   --setenv TMPDIR "/tmp"
-
-  # Standard HTTP proxy format — Claude Code sends CONNECT for HTTPS
   --setenv HTTP_PROXY  "http://127.0.0.1:${INTERNAL_PROXY_PORT}"
   --setenv HTTPS_PROXY "http://127.0.0.1:${INTERNAL_PROXY_PORT}"
   --setenv ALL_PROXY   "http://127.0.0.1:${INTERNAL_PROXY_PORT}"
   --setenv NO_PROXY    ""
-
   --setenv CLAUDE_SANDBOX_WORKSPACE "$_CS_WORKSPACE"
 )
+
+# XDG dirs if set (Claude Code may need these)
+[[ -n "${XDG_CONFIG_HOME:-}" ]] && BWRAP_ARGS+=(--setenv XDG_CONFIG_HOME "$XDG_CONFIG_HOME")
+[[ -n "${XDG_DATA_HOME:-}" ]]   && BWRAP_ARGS+=(--setenv XDG_DATA_HOME "$XDG_DATA_HOME")
+[[ -n "${XDG_CACHE_HOME:-}" ]]  && BWRAP_ARGS+=(--setenv XDG_CACHE_HOME "$XDG_CACHE_HOME")
+
+# Pass auth tokens if set (intentionally passed through)
+[[ -n "${ANTHROPIC_API_KEY:-}" ]] && BWRAP_ARGS+=(--setenv ANTHROPIC_API_KEY "$ANTHROPIC_API_KEY")
+[[ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]] && BWRAP_ARGS+=(--setenv CLAUDE_CODE_OAUTH_TOKEN "$CLAUDE_CODE_OAUTH_TOKEN")
+
+# Pass through profile-configured env vars (for MCP support)
+for var in "${PASSTHROUGH_ENV[@]}"; do
+  [[ -n "$var" && -n "${!var:-}" ]] && BWRAP_ARGS+=(--setenv "$var" "${!var}")
+done
 
 # --- Working directory ---
 # If the cwd is under a blocked path (e.g. ~ in strict profile) and not

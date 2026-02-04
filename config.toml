@@ -73,6 +73,10 @@ allowed_domains = [
     "docs.claude.com",
 ]
 
+[profile.nixos-admin.environment]
+# Additional env vars to pass through (for MCP support etc.)
+passthrough = []
+
 
 # ─────────────────────────────────────────────────────────────
 # DEV: Software development in a project directory
@@ -133,7 +137,15 @@ allowed_domains = [
     "index.crates.io",
     "static.crates.io",
     "docs.claude.com",
+    # Personal dev domains
+    "hulsman.dev",
+    "*.hulsman.dev",
+    "*.arc8.dev",
 ]
+
+[profile.dev.environment]
+# Additional env vars to pass through (for MCP support etc.)
+passthrough = []
 
 
 # ─────────────────────────────────────────────────────────────
@@ -165,6 +177,10 @@ allowed_domains = [
     "sentry.io",
     "statsig.anthropic.com",
 ]
+
+[profile.strict.environment]
+# Additional env vars to pass through (for MCP support etc.)
+passthrough = []
 
 
 # ─────────────────────────────────────────────────────────────
@@ -212,3 +228,7 @@ allowed_domains = [
     "sentry.io",
     "statsig.anthropic.com",
 ]
+
+[profile.macos-admin.environment]
+# Additional env vars to pass through (for MCP support etc.)
+passthrough = []

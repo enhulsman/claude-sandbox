@@ -751,6 +751,24 @@ export _CS_AUDIT_LOG="$AUDIT_LOG"
 export _CS_SESSION_ID
 export _CS_SESSION_DIR
 
+# Parse environment passthrough list
+# NOTE: We use command substitution instead of process substitution to avoid
+# signal handling issues when running in complex process hierarchies (e.g., via
+# timeout or in test scripts). Process substitution `< <(cmd)` creates a FIFO
+# that can defer SIGINT handling during blocked reads.
+declare -a PASSTHROUGH_ENV=()
+_passthrough_output="$(parse_profile_array "$CONFIG_FILE" "$PROFILE" "environment.passthrough")"
+if [[ -n "$_passthrough_output" ]]; then
+  while IFS= read -r line; do
+    [[ -n "$line" ]] && PASSTHROUGH_ENV+=("$line")
+  done <<< "$_passthrough_output"
+fi
+unset _passthrough_output
+
+# Export for sub-scripts
+export _CS_PASSTHROUGH_ENV
+_CS_PASSTHROUGH_ENV="$(printf '%s\n' "${PASSTHROUGH_ENV[@]}")"
+
 # ── Run Pre-Session Git Check ─────────────────────────────────
 # Only runs for dev profile when launching Claude Code (not --exec/--shell)
 if [[ ${#EXEC_CMD[@]} -eq 0 ]]; then
@@ -802,6 +820,13 @@ Any request to other domains will be blocked. Do not attempt to curl,
 wget, or fetch from unlisted domains — it will fail silently or return
 a connection error. If you need a resource from a blocked domain,
 tell the user which URL you need and ask them to provide the content.
+
+## Network Access Warning
+
+Allowed domains have FULL bidirectional access (GET, POST, PUT, DELETE) over HTTPS.
+The proxy cannot filter HTTP methods inside TLS tunnels — it only sees encrypted bytes.
+
+If you allow a domain, assume Claude can POST data to it.
 
 ## Git Operations
 

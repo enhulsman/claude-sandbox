@@ -75,6 +75,12 @@ cat > "$OUTPUT" <<HEADER
   (regex #"${HOME}/\\.claude\\.json\\.tmp.*")
 )
 
+;; ── Protect settings.json from modification ─────────────────
+;; This file contains security-critical deny rules. Block writes to prevent
+;; prompt injection from removing deny rules.
+;; NOTE: Seatbelt literal matching has quirks; this is best-effort on macOS.
+(deny file-write* (literal "${HOME}/.claude/settings.json"))
+
 HEADER
 
 # ── Profile: writable paths ──────────────────────────────────
