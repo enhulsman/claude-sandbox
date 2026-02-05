@@ -66,7 +66,8 @@ SEOF
   for path in "${WRITABLE_PATHS[@]}"; do
     [[ -z "$path" ]] && continue
     mkdir -p "$path" 2>/dev/null || true
-    abs_path="$(cd "$path" 2>/dev/null && pwd || echo "$path")"
+    # Use pwd -P for physical path resolution (resolve symlinks)
+    abs_path="$(cd "$path" 2>/dev/null && pwd -P || echo "$path")"
     echo "(allow file-write* (subpath \"$abs_path\"))" >> "$SB_PROFILE"
   done
 
@@ -76,7 +77,8 @@ SEOF
   for path in "${BLOCKED_PATHS[@]}"; do
     [[ -z "$path" ]] && continue
     if [[ -e "$path" ]]; then
-      abs_path="$(cd "$(dirname "$path")" 2>/dev/null && pwd)/$(basename "$path")"
+      # Use pwd -P for physical path resolution (resolve symlinks)
+      abs_path="$(cd "$(dirname "$path")" 2>/dev/null && pwd -P)/$(basename "$path")"
       echo "(deny file-read* (subpath \"$abs_path\"))" >> "$SB_PROFILE"
     fi
   done

@@ -89,12 +89,14 @@ HEADER
   for path in "${WRITABLE_PATHS[@]}"; do
     [[ -z "$path" ]] && continue
     mkdir -p "$path" 2>/dev/null || true
-    abs_path="$(cd "$path" 2>/dev/null && pwd || echo "$path")"
+    # Use pwd -P for physical path resolution (resolve symlinks)
+    abs_path="$(cd "$path" 2>/dev/null && pwd -P || echo "$path")"
     echo "(allow file-write* (subpath \"$abs_path\"))"
   done
   if [[ -n "$WORKSPACE" ]]; then
     mkdir -p "$WORKSPACE" 2>/dev/null || true
-    ws_abs="$(cd "$WORKSPACE" && pwd)"
+    # Use pwd -P for physical path resolution (resolve symlinks)
+    ws_abs="$(cd "$WORKSPACE" && pwd -P)"
     echo "(allow file-write* (subpath \"$ws_abs\"))"
   fi
   echo ""
@@ -107,7 +109,8 @@ HEADER
   for path in "${BLOCKED_PATHS[@]}"; do
     [[ -z "$path" ]] && continue
     if [[ -e "$path" ]]; then
-      abs_path="$(cd "$(dirname "$path")" 2>/dev/null && pwd)/$(basename "$path")"
+      # Use pwd -P for physical path resolution (resolve symlinks)
+      abs_path="$(cd "$(dirname "$path")" 2>/dev/null && pwd -P)/$(basename "$path")"
       echo "(deny file-read* (subpath \"$abs_path\"))"
     fi
   done

@@ -126,6 +126,117 @@ echo ""
 
 
 # ══════════════════════════════════════════════════════════════
+# Blocked Path Isolation Tests
+# ══════════════════════════════════════════════════════════════
+echo "── Blocked Path Isolation ────────────────────"
+
+# NOTE: These tests verify that blocked paths (like ~/.ssh) are properly
+# isolated inside the sandbox by bubblewrap's tmpfs mounts. They confirm
+# that no sensitive content is accessible, regardless of how you try to
+# reach it (direct access, symlinks, path traversal).
+#
+# IMPORTANT: These tests do NOT validate the pre-mount symlink resolution
+# security fix. That validation happens BEFORE the sandbox starts and must
+# be tested OUTSIDE the sandbox. See test-symlink-setup.sh for those tests.
+
+# Test 1: Blocked path is empty (direct access)
+if ls "$HOME/.ssh"/id_* 2>/dev/null | grep -q . || \
+   ls "$HOME/.ssh"/*.pub 2>/dev/null | grep -q . || \
+   cat "$HOME/.ssh/config" 2>/dev/null | grep -q .; then
+  result FAIL "~/.ssh is empty" "blocked path contains files"
+else
+  result PASS "~/.ssh is empty (tmpfs isolation working)"
+fi
+
+# Test 2: Symlink to blocked path reaches empty tmpfs
+TEST_LINK="/tmp/test-symlink-ssh-$$"
+if ln -s "$HOME/.ssh" "$TEST_LINK" 2>/dev/null; then
+  if ls "$TEST_LINK"/id_* 2>/dev/null | grep -q .; then
+    result FAIL "Symlink reaches empty tmpfs" "symlink exposes SSH keys"
+  else
+    result PASS "Symlink reaches empty tmpfs"
+  fi
+  rm -f "$TEST_LINK"
+else
+  result WARN "Symlink reaches empty tmpfs" "cannot create test symlink"
+fi
+
+# Test 3: Path traversal reaches empty tmpfs
+if ls "$HOME/../$(whoami)/.ssh"/id_* 2>/dev/null | grep -q .; then
+  result FAIL "Path traversal blocked" "traversal exposes SSH keys"
+else
+  result PASS "Path traversal reaches empty tmpfs"
+fi
+
+# Test 4: Multi-hop symlink chain reaches empty tmpfs
+LINK_A="/tmp/test-link-a-$$"
+LINK_B="/tmp/test-link-b-$$"
+if ln -s "$HOME/.ssh" "$LINK_A" 2>/dev/null && ln -s "$LINK_A" "$LINK_B" 2>/dev/null; then
+  if ls "$LINK_B"/id_* 2>/dev/null | grep -q .; then
+    result FAIL "Multi-hop chain blocked" "chain exposes SSH keys"
+  else
+    result PASS "Multi-hop symlink chain reaches empty tmpfs"
+  fi
+  rm -f "$LINK_A" "$LINK_B"
+else
+  result WARN "Multi-hop chain blocked" "cannot create test symlinks"
+fi
+
+echo ""
+
+# ══════════════════════════════════════════════════════════════
+# Path Handling Robustness Tests
+# ══════════════════════════════════════════════════════════════
+echo "── Path Handling Robustness ──────────────────"
+
+# Test 5: Circular symlink (should not hang)
+CIRC_A="/tmp/circ-a-$$"
+CIRC_B="/tmp/circ-b-$$"
+ln -s "$CIRC_B" "$CIRC_A" 2>/dev/null
+ln -s "$CIRC_A" "$CIRC_B" 2>/dev/null
+if timeout 2s ls -la "$CIRC_A" >/dev/null 2>&1; then
+  result PASS "Circular symlink handled gracefully"
+elif [[ $? -eq 124 ]]; then
+  result FAIL "Circular symlink handling" "hung on circular symlink"
+else
+  result PASS "Circular symlink handled gracefully"
+fi
+rm -f "$CIRC_A" "$CIRC_B"
+
+# Test 6: Broken symlink
+BROKEN="/tmp/broken-link-$$"
+ln -s "/nonexistent/path/that/does/not/exist" "$BROKEN" 2>/dev/null
+if [[ -e "$BROKEN" ]]; then
+  result FAIL "Broken symlink" "broken symlink appears to exist"
+else
+  result PASS "Broken symlink correctly non-existent"
+fi
+rm -f "$BROKEN"
+
+# Test 7: Path with spaces
+TEST_SPACE="/tmp/test path with spaces $$"
+mkdir -p "$TEST_SPACE" 2>/dev/null
+if [[ -d "$TEST_SPACE" ]]; then
+  result PASS "Path with spaces handled correctly"
+  rm -rf "$TEST_SPACE"
+else
+  result FAIL "Path with spaces" "path with spaces failed"
+fi
+
+# Test 8: CWD is in allowed location
+ACTUAL_CWD="$(pwd -P)"
+WORKSPACE="${CLAUDE_SANDBOX_WORKSPACE:-$HOME/claude-workspace}"
+# CWD should be either in workspace or in a writable path
+if [[ "$ACTUAL_CWD" == "$WORKSPACE"* ]] || [[ -w "$ACTUAL_CWD" ]]; then
+  result PASS "CWD is in allowed writable location"
+else
+  result WARN "CWD location" "CWD=$ACTUAL_CWD may not be in expected location"
+fi
+
+echo ""
+
+
+# ══════════════════════════════════════════════════════════════
 # Network Tests
 # ══════════════════════════════════════════════════════════════
 echo "── Network Isolation ─────────────────────────"
