@@ -772,7 +772,9 @@ _CS_PASSTHROUGH_ENV="$(printf '%s\n' "${PASSTHROUGH_ENV[@]}")"
 # ── Run Pre-Session Git Check ─────────────────────────────────
 # Only runs for dev profile when launching Claude Code (not --exec/--shell)
 if [[ ${#EXEC_CMD[@]} -eq 0 ]]; then
-  check_git_status "$(pwd)"
+  # Resolve symlinks for git check
+  _git_check_path="$(pwd -P 2>/dev/null || pwd)"
+  check_git_status "$_git_check_path"
 fi
 
 # ── Generate Sandbox Context for Claude Code ─────────────────

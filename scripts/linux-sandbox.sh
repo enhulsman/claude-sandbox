@@ -21,6 +21,140 @@ readarray -t BLOCKED_PATHS   <<< "$_CS_BLOCKED_PATHS"
 readarray -t WRITABLE_PATHS  <<< "$_CS_WRITABLE_PATHS"
 readarray -t PASSTHROUGH_ENV <<< "${_CS_PASSTHROUGH_ENV:-}"
 
+# ── Path Security Utilities ───────────────────────────────────
+
+# Validate path doesn't contain dangerous characters (newlines).
+# These could break newline-delimited array IPC.
+# Note: Null bytes cannot exist in bash variables (C string termination),
+# so no check is needed for them.
+# Usage: validate_path_chars "$path" || exit 1
+validate_path_chars() {
+  local path="$1"
+  if [[ "$path" == *$'\n'* ]]; then
+    echo "ERROR: Path contains newline character (rejected for security)" >&2
+    return 1
+  fi
+  return 0
+}
+
+# Canonicalize a path by resolving all symlinks to physical path.
+# Returns exit code 1 on failure - callers MUST check return code.
+# Usage: resolved=$(canonicalize_path "$path") || exit 1
+canonicalize_path() {
+  local path="$1"
+  local result
+
+  # Validate characters first
+  validate_path_chars "$path" || return 1
+
+  # Handle relative paths (like ".")
+  if [[ "$path" != /* ]]; then
+    if [[ -d "$path" ]]; then
+      result=$(cd "$path" 2>/dev/null && pwd -P) || return 1
+      echo "$result"
+      return 0
+    fi
+    # Non-directory relative path: resolve parent, append basename
+    local dir base
+    dir="$(dirname "$path")"
+    base="$(basename "$path")"
+    if [[ -d "$dir" ]]; then
+      result=$(cd "$dir" 2>/dev/null && pwd -P) || return 1
+      echo "$result/$base"
+      return 0
+    fi
+    # Parent doesn't exist - cannot resolve
+    echo "ERROR: Cannot resolve path (parent does not exist): $path" >&2
+    return 1
+  fi
+
+  # Absolute path - platform-specific resolution
+  if [[ "$(uname -s)" == "Darwin" ]]; then
+    # macOS: Use Python for reliable cross-platform resolution
+    # SECURITY: Pass path via stdin to prevent command injection
+    if result=$(printf '%s' "$path" | python3 -c "import os, sys; print(os.path.realpath(sys.stdin.read()))" 2>/dev/null); then
+      echo "$result"
+      return 0
+    fi
+    echo "ERROR: Cannot resolve path on macOS: $path" >&2
+    return 1
+  else
+    # Linux: Use realpath
+    # For existing paths, use -e (canonicalize-existing) which fails if path doesn't exist
+    # For paths to be created, resolve the existing parent first
+    if [[ -e "$path" ]]; then
+      if result=$(realpath -e "$path" 2>/dev/null); then
+        echo "$result"
+        return 0
+      fi
+      echo "ERROR: Cannot resolve existing path: $path" >&2
+      return 1
+    else
+      # Path doesn't exist - resolve parent, append basename
+      local dir base
+      dir="$(dirname "$path")"
+      base="$(basename "$path")"
+      if [[ -e "$dir" ]]; then
+        local resolved_dir
+        if resolved_dir=$(realpath -e "$dir" 2>/dev/null); then
+          echo "$resolved_dir/$base"
+          return 0
+        fi
+      fi
+      echo "ERROR: Cannot resolve path (parent does not exist): $path" >&2
+      return 1
+    fi
+  fi
+}
+
+# Validate that a resolved path doesn't fall under any blocked path.
+# Both candidate and blocked paths must already be resolved.
+# Usage: validate_not_blocked "$resolved_path" || exit 1
+validate_not_blocked() {
+  local resolved="$1"
+  local original="${2:-$1}"
+
+  for blocked in "${BLOCKED_PATHS_RESOLVED[@]}"; do
+    [[ -z "$blocked" ]] && continue
+
+    # Check exact match or subpath
+    if [[ "$resolved" == "$blocked" || "$resolved" == "$blocked"/* ]]; then
+      echo "ERROR: Access denied for path: $original" >&2
+      return 1
+    fi
+  done
+
+  return 0
+}
+
+# ── Pre-resolve blocked paths for efficient comparison ────────
+# Resolve all blocked paths once at startup. If a blocked path doesn't exist,
+# we normalize it to an absolute path for consistent comparison.
+declare -a BLOCKED_PATHS_RESOLVED=()
+for blocked in "${BLOCKED_PATHS[@]}"; do
+  [[ -z "$blocked" ]] && continue
+  validate_path_chars "$blocked" || {
+    echo "ERROR: Blocked path in config contains invalid characters" >&2
+    exit 1
+  }
+
+  if resolved=$(canonicalize_path "$blocked" 2>/dev/null); then
+    BLOCKED_PATHS_RESOLVED+=("$resolved")
+  else
+    # Path doesn't exist - ensure it's absolute for comparison
+    # Expand ~ if present, then store
+    normalized="$blocked"
+    if [[ "$normalized" == "~"* ]]; then
+      normalized="${HOME}${normalized:1}"
+    fi
+    # If still relative, make it absolute based on HOME
+    if [[ "$normalized" != /* ]]; then
+      normalized="$HOME/$normalized"
+    fi
+    BLOCKED_PATHS_RESOLVED+=("$normalized")
+  fi
+done
+
 # ── Set up socat bridge (host side) ──────────────────────────
 # bubblewrap's --unshare-net creates a completely empty network namespace.
 # We use a Unix socket as the sole communication channel between the
@@ -204,14 +338,40 @@ for path in "${BLOCKED_PATHS[@]}"; do
 done
 
 # --- Profile: writable mounts ---
+# Store original resolutions for TOCTOU verification later
+declare -a WRITABLE_PATHS_RESOLVED=()
+declare -a WRITABLE_PATHS_ORIGINAL=()
+
 for path in "${WRITABLE_PATHS[@]}"; do
   [[ -z "$path" ]] && continue
-  # Resolve relative paths (e.g., "." from config)
-  if [[ "$path" != /* ]]; then
-    path="$(cd "$path" 2>/dev/null && pwd || echo "$path")"
+
+  # Validate path characters
+  validate_path_chars "$path" || {
+    echo "ERROR: Writable path contains invalid characters: refusing to proceed" >&2
+    exit 1
+  }
+
+  original_path="$path"
+  resolved_path=""
+
+  # Resolve to physical path
+  if ! resolved_path=$(canonicalize_path "$path"); then
+    echo "ERROR: Cannot resolve writable path '$original_path'" >&2
+    exit 1
   fi
-  mkdir -p "$path" 2>/dev/null || true
-  BWRAP_ARGS+=(--bind "$path" "$path")
+
+  # Validate resolved path is not under a blocked path
+  if ! validate_not_blocked "$resolved_path" "$original_path"; then
+    echo "ERROR: Writable path resolves to blocked location - refusing to mount" >&2
+    exit 1
+  fi
+
+  # Store for TOCTOU verification
+  WRITABLE_PATHS_ORIGINAL+=("$original_path")
+  WRITABLE_PATHS_RESOLVED+=("$resolved_path")
+
+  mkdir -p "$resolved_path" 2>/dev/null || true
+  BWRAP_ARGS+=(--bind "$resolved_path" "$resolved_path")
 done
 
 # --- Claude Code binary ---
@@ -318,38 +478,93 @@ for var in "${PASSTHROUGH_ENV[@]}"; do
 done
 
 # --- Working directory ---
-# If the cwd is under a blocked path (e.g. ~ in strict profile) and not
-# overridden by a writable mount, it won't exist in the sandbox. Without
-# --chdir, bwrap would land in / or an empty tmpfs. Fall back to the
-# workspace so Claude starts somewhere usable.
-_cwd="$(pwd)"
-_cwd_accessible=1
-for path in "${BLOCKED_PATHS[@]}"; do
-  [[ -z "$path" ]] && continue
-  if [[ "$_cwd" == "$path" || "$_cwd" == "$path"/* ]]; then
-    _cwd_accessible=0
-    for wpath in "${WRITABLE_PATHS[@]}"; do
-      [[ -z "$wpath" ]] && continue
-      if [[ "$wpath" != /* ]]; then
-        wpath="$(cd "$wpath" 2>/dev/null && pwd || echo "$wpath")"
-      fi
-      if [[ "$_cwd" == "$wpath" || "$_cwd" == "$wpath"/* ]]; then
-        _cwd_accessible=1
-        break
-      fi
-    done
-    break
+# Determine if CWD is accessible inside the sandbox and set --chdir appropriately.
+# Must be done after writable paths are processed.
+determine_cwd() {
+  local cwd_logical cwd_resolved blocked wpath_resolved
+
+  cwd_logical="$(pwd)"
+  if ! cwd_resolved=$(canonicalize_path "$cwd_logical"); then
+    echo "WARNING: Cannot resolve current directory, using workspace" >&2
+    BWRAP_ARGS+=(--chdir "$_CS_WORKSPACE")
+    return
   fi
-done
-if [[ "$_cwd_accessible" == "0" ]]; then
-  BWRAP_ARGS+=(--chdir "$_CS_WORKSPACE")
-fi
+
+  local cwd_accessible=1
+
+  # Check if CWD is under a blocked path
+  for blocked in "${BLOCKED_PATHS_RESOLVED[@]}"; do
+    [[ -z "$blocked" ]] && continue
+    if [[ "$cwd_resolved" == "$blocked" || "$cwd_resolved" == "$blocked"/* ]]; then
+      cwd_accessible=0
+      # Check if overridden by writable path
+      for wpath_resolved in "${WRITABLE_PATHS_RESOLVED[@]}"; do
+        [[ -z "$wpath_resolved" ]] && continue
+        if [[ "$cwd_resolved" == "$wpath_resolved" || "$cwd_resolved" == "$wpath_resolved"/* ]]; then
+          cwd_accessible=1
+          break
+        fi
+      done
+      break
+    fi
+  done
+
+  if [[ "$cwd_accessible" == "0" ]]; then
+    echo "WARNING: Current directory is under blocked path, using workspace" >&2
+    BWRAP_ARGS+=(--chdir "$_CS_WORKSPACE")
+  else
+    # SUCCESS CASE: Use the resolved physical path as CWD
+    # This is the key fix for the symlink CWD issue
+    BWRAP_ARGS+=(--chdir "$cwd_resolved")
+  fi
+}
+
+determine_cwd
 
 # --- Exec via entry script ---
 # The entry script brings up loopback, starts the TCP→Unix bridge,
 # then execs Claude Code. This is needed because --unshare-net kills
 # all networking, and we need loopback for the HTTP proxy.
 BWRAP_ARGS+=(-- /run/sandbox/entry.sh)
+
+# ── Final validation before exec (TOCTOU mitigation) ──────────
+# Re-validate critical paths immediately before exec.
+# Compare against stored original resolutions to detect symlink swaps.
+verify_paths_stable() {
+  local i=0
+  for original_path in "${WRITABLE_PATHS_ORIGINAL[@]}"; do
+    [[ -z "$original_path" ]] && { ((i++)) || true; continue; }
+
+    local current_resolved expected_resolved
+    expected_resolved="${WRITABLE_PATHS_RESOLVED[$i]}"
+
+    if ! current_resolved=$(canonicalize_path "$original_path" 2>/dev/null); then
+      echo "ERROR: Path disappeared before sandbox start: $original_path" >&2
+      return 1
+    fi
+
+    # CRITICAL: Compare against original resolution to detect symlink swaps
+    if [[ "$current_resolved" != "$expected_resolved" ]]; then
+      echo "ERROR: Path resolution changed (was: $expected_resolved, now: $current_resolved)" >&2
+      echo "ERROR: Possible symlink race attack detected" >&2
+      return 1
+    fi
+
+    # Also verify still not blocked (belt and suspenders)
+    if ! validate_not_blocked "$current_resolved" "$original_path"; then
+      echo "ERROR: Path now resolves to blocked location: $original_path" >&2
+      return 1
+    fi
+
+    ((i++)) || true
+  done
+  return 0
+}
+
+if ! verify_paths_stable; then
+  echo "ERROR: Path validation failed - refusing to start sandbox" >&2
+  exit 1
+fi
 
 echo "  Launching Claude Code in bubblewrap sandbox..."
 
