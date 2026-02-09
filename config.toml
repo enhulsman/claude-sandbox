@@ -119,6 +119,7 @@ blocked = [
 ]
 writable = [
     ".",
+    "~/.dotfiles",
 ]
 
 [profile.dev.network]
