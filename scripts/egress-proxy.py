@@ -17,6 +17,7 @@ import argparse
 import http.server
 import json
 import select
+import signal
 import socket
 import socketserver
 import sys
@@ -84,6 +85,17 @@ class ProxyConfig:
 
         tag = "BLOCK" if result == "BLOCKED" else "PROXY"
         print(f"[{tag}] {ts} {method:7s} {host}", file=sys.stderr)
+
+    def close(self):
+        """Flush and close the audit log file."""
+        with self._lock:
+            if self._audit_file:
+                try:
+                    self._audit_file.flush()
+                    self._audit_file.close()
+                except OSError:
+                    pass
+                self._audit_file = None
 
 
 # ══════════════════════════════════════════════════════════════
@@ -262,12 +274,21 @@ def main():
     print(f"[PROXY] Allowed domains: {domains}", file=sys.stderr)
     print(f"[PROXY] Audit log: {args.audit_log or '(stderr only)'}", file=sys.stderr)
 
+    # Handle SIGTERM gracefully (sent by cleanup() on session exit)
+    def _handle_sigterm(signum, frame):
+        raise SystemExit(0)
+    signal.signal(signal.SIGTERM, _handle_sigterm)
+
     # Run until killed
     try:
         while True:
             time.sleep(3600)
-    except KeyboardInterrupt:
+    except (KeyboardInterrupt, SystemExit):
+        pass
+    finally:
         print("\n[PROXY] Shutting down.", file=sys.stderr)
+        http_server.shutdown()
+        config.close()
 
 
 if __name__ == "__main__":

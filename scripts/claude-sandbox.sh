@@ -77,6 +77,7 @@ PROXY_PORT=""
 PROXY_PID=""
 SOCAT_PID=""
 SOCKET_DIR=""
+SANDBOX_PID=""
 
 # ── Usage ─────────────────────────────────────────────────────
 usage() {
@@ -955,15 +956,45 @@ format_duration() {
 }
 
 # ── Cleanup ───────────────────────────────────────────────────
+_CLEANUP_DONE=0
 cleanup() {
+  [[ "$_CLEANUP_DONE" == "1" ]] && return
+  _CLEANUP_DONE=1
+
   local exit_code=$?
   local end_time=$(date +%s)
   local duration=$((end_time - START_TIME))
 
-  [[ -n "${PROXY_PID:-}" ]]  && kill "$PROXY_PID" 2>/dev/null || true
-  [[ -n "${SOCAT_PID:-}" ]]  && kill "$SOCAT_PID" 2>/dev/null || true
+  # Kill sandbox (bwrap + Claude Code) if still running
+  if [[ -n "${SANDBOX_PID:-}" ]] && kill -0 "$SANDBOX_PID" 2>/dev/null; then
+    kill "$SANDBOX_PID" 2>/dev/null || true
+    wait "$SANDBOX_PID" 2>/dev/null || true
+  fi
+
+  # Kill proxy: SIGTERM first, then SIGKILL fallback
+  if [[ -n "${PROXY_PID:-}" ]]; then
+    kill "$PROXY_PID" 2>/dev/null || true
+    local i=0
+    while kill -0 "$PROXY_PID" 2>/dev/null && [[ $i -lt 10 ]]; do
+      sleep 0.1
+      ((i++)) || true
+    done
+    kill -9 "$PROXY_PID" 2>/dev/null || true
+  fi
+
+  # Kill host-side socat
+  if [[ -n "${SOCAT_PID:-}" ]]; then
+    kill "$SOCAT_PID" 2>/dev/null || true
+    sleep 0.2
+    kill -9 "$SOCAT_PID" 2>/dev/null || true
+  fi
+
+  # Clean up socket directory
   [[ -n "${SOCKET_DIR:-}" ]] && rm -rf "$SOCKET_DIR" 2>/dev/null || true
-  wait 2>/dev/null || true
+
+  # Reap children (already dead from SIGKILL, so returns immediately)
+  [[ -n "${PROXY_PID:-}" ]] && wait "$PROXY_PID" 2>/dev/null || true
+  [[ -n "${SOCAT_PID:-}" ]] && wait "$SOCAT_PID" 2>/dev/null || true
 
   # Generate session report and display summary
   if [[ -f "$AUDIT_LOG" ]]; then
@@ -1089,7 +1120,7 @@ cleanup() {
 
   exit "$exit_code"
 }
-trap cleanup EXIT INT TERM
+trap cleanup EXIT INT TERM HUP QUIT
 
 # ── Banner ────────────────────────────────────────────────────
 PLATFORM_LABEL="unknown"
@@ -1126,19 +1157,63 @@ if [[ "$DRY_RUN" == "1" ]]; then
   exit 0
 fi
 
+# ── Host-side socat bridge (Linux only) ───────────────────────
+# On Linux, bubblewrap's --unshare-net creates a completely empty network
+# namespace. A Unix socket bridged by socat is the sole communication channel
+# between the sandbox and the egress proxy on the host.
+#
+# This must be set up in the PARENT process (claude-sandbox.sh) rather than
+# the child (linux-sandbox.sh) so that SOCAT_PID and SOCKET_DIR are visible
+# to cleanup() for reliable process/tempdir cleanup.
+setup_socat_bridge() {
+  SOCKET_DIR=$(mktemp -d /tmp/claude-sandbox-sock.XXXXXX)
+  local socket_path="$SOCKET_DIR/proxy.sock"
+
+  socat "UNIX-LISTEN:${socket_path},fork,mode=777" "TCP:127.0.0.1:${PROXY_PORT}" &
+  SOCAT_PID=$!
+
+  # Wait for socket to be created (up to 3 seconds)
+  local i=0
+  while [[ ! -S "$socket_path" ]] && [[ $i -lt 30 ]]; do
+    sleep 0.1
+    ((i++)) || true
+  done
+
+  if [[ ! -S "$socket_path" ]]; then
+    echo "ERROR: socat failed to create socket at $socket_path" >&2
+    exit 1
+  fi
+
+  export _CS_SOCKET_DIR="$SOCKET_DIR"
+}
+
 # ── Start Proxy and Dispatch ──────────────────────────────────
 start_proxy
 export _CS_PROXY_PORT="$PROXY_PORT"
 
+# Start host-side socat bridge (Linux only)
+if [[ "${CLAUDE_SANDBOX_IS_LINUX:-0}" == "1" ]]; then
+  setup_socat_bridge
+fi
+
 echo "  Proxy: port $PROXY_PORT (PID $PROXY_PID)"
 echo ""
 
+# Run sandbox in background so `wait` is interruptible by signals.
+# Without this, bash defers trap handlers until the foreground child exits,
+# making SIGTERM/SIGHUP cleanup ineffective.
+# Redirect /dev/tty to preserve interactive stdin (bash redirects background
+# jobs to /dev/null by default when job control is off).
 if [[ "${CLAUDE_SANDBOX_IS_LINUX:-0}" == "1" ]]; then
-  bash "$SCRIPTS_DIR/linux-sandbox.sh" "${CLAUDE_ARGS[@]}"
+  bash "$SCRIPTS_DIR/linux-sandbox.sh" "${CLAUDE_ARGS[@]}" </dev/tty &
+  SANDBOX_PID=$!
 elif [[ "${CLAUDE_SANDBOX_IS_DARWIN:-0}" == "1" ]]; then
-  bash "$SCRIPTS_DIR/macos-sandbox.sh" "${CLAUDE_ARGS[@]}"
+  bash "$SCRIPTS_DIR/macos-sandbox.sh" "${CLAUDE_ARGS[@]}" </dev/tty &
+  SANDBOX_PID=$!
 else
   echo "ERROR: Unsupported platform. Set CLAUDE_SANDBOX_IS_LINUX=1 or CLAUDE_SANDBOX_IS_DARWIN=1." >&2
   exit 1
 fi
+
+wait "$SANDBOX_PID" 2>/dev/null || true
 # cleanup() runs via EXIT trap after sandbox exits

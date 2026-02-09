@@ -155,29 +155,20 @@ for blocked in "${BLOCKED_PATHS[@]}"; do
   fi
 done
 
-# ── Set up socat bridge (host side) ──────────────────────────
-# bubblewrap's --unshare-net creates a completely empty network namespace.
-# We use a Unix socket as the sole communication channel between the
-# sandbox and the host. On the host side, socat bridges this socket to
-# the egress proxy's TCP port.
+# ── Read socket directory from parent ─────────────────────────
+# The host-side socat bridge is managed by claude-sandbox.sh so that
+# its PID is accessible for cleanup in the parent process.
 #
 # Full chain:
 #   Claude Code → TCP 127.0.0.1:18080 (sandbox socat)
 #     → Unix /run/sandbox/proxy.sock (bind-mounted into sandbox)
 #     → TCP 127.0.0.1:$PROXY_PORT (host socat)
 #     → egress-proxy.py (HTTP CONNECT for HTTPS, or direct for HTTP)
-
-SOCKET_DIR=$(mktemp -d /tmp/claude-sandbox-sock.XXXXXX)
+SOCKET_DIR="${_CS_SOCKET_DIR:?ERROR: _CS_SOCKET_DIR not set}"
 SOCKET_PATH="$SOCKET_DIR/proxy.sock"
 
-socat "UNIX-LISTEN:${SOCKET_PATH},fork,mode=777" "TCP:127.0.0.1:${_CS_PROXY_PORT}" &
-SOCAT_PID=$!
-export SOCAT_PID
-
-sleep 0.3
-
 if [[ ! -S "$SOCKET_PATH" ]]; then
-  echo "ERROR: socat failed to create socket at $SOCKET_PATH" >&2
+  echo "ERROR: proxy socket not found at $SOCKET_PATH" >&2
   exit 1
 fi
 
@@ -216,6 +207,14 @@ else
   _CS_NIXOS_SYSTEM_PATH="/run/current-system/sw/bin"
 fi
 
+# ── Extract Nix store paths from current PATH ────────────────
+# The Nix flake provides tools (bwrap, socat, node, etc.) via /nix/store
+# paths. Claude Code's internal sandbox needs bwrap on PATH. Since /nix
+# is mounted read-only inside the sandbox, these store paths are accessible
+# — they just need to be in PATH. Extract them at generation time so
+# they're baked into the entry script.
+_CS_NIX_STORE_PATH=$(echo "$PATH" | tr ':' '\n' | grep '^/nix/store' | paste -sd ':')
+
 INTERNAL_PROXY_PORT=18080
 ENTRY_SCRIPT="$SOCKET_DIR/entry.sh"
 cat > "$ENTRY_SCRIPT" <<ENTRY_EOF
@@ -227,7 +226,9 @@ cat > "$ENTRY_SCRIPT" <<ENTRY_EOF
 # (e.g. /run/current-system/sw/bin on NixOS where /run is not mounted).
 # On NixOS, /run/current-system/sw/bin is a symlink into /nix/store —
 # resolve it at generation time so the real store path lands in PATH.
-export PATH="/usr/bin:/bin:/usr/local/bin:${HOME}/.local/bin:/nix/var/nix/profiles/default/bin:${_CS_NIXOS_SYSTEM_PATH}"
+# Nix store paths are appended so flake-provided tools (bwrap, etc.)
+# are available inside the sandbox.
+export PATH="/usr/bin:/bin:/usr/local/bin:${HOME}/.local/bin:/nix/var/nix/profiles/default/bin:${_CS_NIXOS_SYSTEM_PATH}:${_CS_NIX_STORE_PATH}"
 
 # 1. Bring up loopback interface in the network namespace
 #    bwrap's --unshare-net creates a net ns with lo DOWN.
@@ -238,12 +239,30 @@ fi
 
 # 2. Start TCP→Unix bridge so Claude Code can reach the proxy
 #    This listens on 127.0.0.1:18080 and forwards to /run/sandbox/proxy.sock
+#    NOTE: This socat runs inside bwrap's network namespace. When bwrap exits,
+#    the network namespace is destroyed, causing this process to self-terminate.
+#    No explicit cleanup is needed from the host side.
 $SOCAT_BIN TCP-LISTEN:$INTERNAL_PROXY_PORT,bind=127.0.0.1,fork,reuseaddr UNIX-CONNECT:/run/sandbox/proxy.sock &
 
 # Give the bridge a moment to start
 $SLEEP_BIN 0.3
 
-# 3. Exec Claude Code with all arguments
+# 3. Preserve nix store paths for child shells.
+#    On NixOS, /etc/zsh/zshenv replaces PATH with system defaults, losing
+#    the nix store paths set above. Claude Code uses zsh for its Bash tool,
+#    so tools like bwrap (needed for Claude's internal sandbox) become
+#    unfindable. Fix: create ~/.zshenv that re-adds nix store paths after
+#    NixOS system init. User zshenv runs AFTER /etc/zsh/zshenv.
+echo 'export PATH="${_CS_NIX_STORE_PATH}:\$PATH"' > "\$HOME/.zshenv"
+
+# 4. Pre-create Claude Code's sandbox temp directory.
+#    Claude Code's internal bwrap needs /tmp/claude-<UID> to exist in the
+#    outer mount namespace for bind mounts and CWD tracking. Inside our
+#    external bwrap, /tmp is a fresh tmpfs — create the directory so the
+#    inner bwrap can use it as a mount point and CWD tracking target.
+mkdir -p "/tmp/claude-\$(id -u)" 2>/dev/null || true
+
+# 5. Exec Claude Code with all arguments
 exec $CLAUDE_BIN_REAL "\$@"
 ENTRY_EOF
 chmod +x "$ENTRY_SCRIPT"
@@ -444,6 +463,8 @@ fi
 # bwrap --ro-bind of individual files fails on some systems (e.g. NixOS).
 BWRAP_ARGS+=(
   --unshare-net
+  --unshare-pid
+  --die-with-parent
   --ro-bind "$SOCKET_DIR" /run/sandbox
 )
 
