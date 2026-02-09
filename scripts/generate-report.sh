@@ -16,6 +16,7 @@ OUTPUT="${2:-}"
 DURATION="${3:-0}"
 PROFILE="${4:-unknown}"
 WORKSPACE="${5:-}"
+RECOGNIZED_DOMAINS_STR="${6:-}"
 
 if [[ -z "$AUDIT_LOG" || -z "$OUTPUT" ]]; then
   echo "Usage: generate-report.sh <audit-log> <output-json> [duration] [profile] [workspace]" >&2
@@ -49,11 +50,13 @@ awk -v session_id="$SESSION_ID" \
     -v end_time="$END_TIME_ISO" \
     -v duration="$DURATION" \
     -v workspace="$WORKSPACE" \
+    -v recognized_str="$RECOGNIZED_DOMAINS_STR" \
 '
 BEGIN {
   total = 0
   allowed = 0
   blocked = 0
+  recognized_blocked = 0
 
   # Initialize arrays
   split("", domain_allowed)
@@ -61,6 +64,25 @@ BEGIN {
   split("", methods)
   split("", blocked_domains)
   split("", ip_ports)
+
+  # Build recognized domains set
+  split("", recognized_domains)
+  n_recog = split(recognized_str, recog_arr, "\n")
+  for (i = 1; i <= n_recog; i++) {
+    d = recog_arr[i]; gsub(/^[[:space:]]+|[[:space:]]+$/, "", d)
+    gsub(/^\.+|\.+$/, "", d)
+    if (d != "") recognized_domains[d] = 1
+  }
+}
+
+# NOTE: is_recognized() logic duplicated in claude-sandbox.sh — keep in sync
+function is_recognized(host,    h, d) {
+  h = tolower(host); gsub(/\.$/, "", h)
+  for (d in recognized_domains) {
+    if (h == d || (length(h) > length(d) && substr(h, length(h) - length(d)) == "." d))
+      return 1
+  }
+  return 0
 }
 
 # JSON format detection
@@ -125,6 +147,7 @@ function process_entry(result, method, host, port) {
     blocked++
     domain_blocked[host]++
     blocked_domains[host]++
+    if (is_recognized(host)) recognized_blocked++
   }
 
   # Track IP access with ports (for port scanning detection)
@@ -148,9 +171,9 @@ END {
   suspicious_count = 0
   suspicious_json = ""
 
-  # Pattern 1: Repeated blocks on same domain (>3 = HIGH)
+  # Pattern 1: Repeated blocks on same domain (>3 = HIGH), skip recognized domains
   for (domain in blocked_domains) {
-    if (blocked_domains[domain] > 3) {
+    if (blocked_domains[domain] > 3 && !is_recognized(domain)) {
       risk_score += 25
       suspicious_count++
       if (suspicious_json != "") suspicious_json = suspicious_json ","
@@ -158,12 +181,13 @@ END {
     }
   }
 
-  # Pattern 2: High block rate (>10% = MEDIUM)
-  if (total > 10 && blocked / total > 0.1) {
+  # Pattern 2: High block rate (>10% = MEDIUM), using only unknown (non-recognized) blocks
+  unknown_blocked = blocked - recognized_blocked
+  if (total > 10 && unknown_blocked / total > 0.1) {
     risk_score += 15
     suspicious_count++
     if (suspicious_json != "") suspicious_json = suspicious_json ","
-    block_pct = int(blocked * 100 / total)
+    block_pct = int(unknown_blocked * 100 / total)
     suspicious_json = suspicious_json sprintf("{\"type\":\"high_block_rate\",\"blocked_percent\":%d,\"severity\":\"medium\",\"description\":\"Unusually high blocked request ratio\"}", block_pct)
   }
 
@@ -252,6 +276,8 @@ END {
   printf "    \"total\": %d,\n", total
   printf "    \"allowed\": %d,\n", allowed
   printf "    \"blocked\": %d,\n", blocked
+  printf "    \"blocked_recognized\": %d,\n", recognized_blocked
+  printf "    \"blocked_unknown\": %d,\n", blocked - recognized_blocked
   printf "    \"by_domain\": {%s},\n", by_domain
   printf "    \"by_method\": {%s}\n", by_method
   printf "  },\n"

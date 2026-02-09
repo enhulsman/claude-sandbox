@@ -731,6 +731,10 @@ while IFS= read -r line; do [[ -n "$line" ]] && WRITABLE_PATHS+=("$line"); done 
 while IFS= read -r line; do [[ -n "$line" ]] && ALLOWED_DOMAINS+=("$line"); done < \
   <(parse_profile_array "$CONFIG_FILE" "$PROFILE" "network.allowed_domains")
 
+declare -a RECOGNIZED_DOMAINS=()
+while IFS= read -r line; do [[ -n "$line" ]] && RECOGNIZED_DOMAINS+=("$line"); done < \
+  <(parse_profile_array "$CONFIG_FILE" "$PROFILE" "network.recognized_domains")
+
 # Workspace is always writable
 WRITABLE_PATHS+=("$WORKSPACE")
 
@@ -747,6 +751,12 @@ export _CS_WRITABLE_PATHS
 _CS_WRITABLE_PATHS="$(printf '%s\n' "${WRITABLE_PATHS[@]}")"
 export _CS_ALLOWED_DOMAINS
 _CS_ALLOWED_DOMAINS="$(printf '%s\n' "${ALLOWED_DOMAINS[@]}")"
+export _CS_RECOGNIZED_DOMAINS
+if [[ ${#RECOGNIZED_DOMAINS[@]} -gt 0 ]]; then
+  _CS_RECOGNIZED_DOMAINS="$(printf '%s\n' "${RECOGNIZED_DOMAINS[@]}")"
+else
+  _CS_RECOGNIZED_DOMAINS=""
+fi
 export _CS_WORKSPACE="$WORKSPACE"
 export _CS_AUDIT_LOG="$AUDIT_LOG"
 export _CS_SESSION_ID
@@ -1003,7 +1013,7 @@ cleanup() {
 
     # Generate JSON report if script is available
     if [[ -x "$report_script" ]] || [[ -f "$report_script" ]]; then
-      bash "$report_script" "$AUDIT_LOG" "$report_json" "$duration" "$PROFILE" "$WORKSPACE" 2>/dev/null || true
+      bash "$report_script" "$AUDIT_LOG" "$report_json" "$duration" "$PROFILE" "$WORKSPACE" "$_CS_RECOGNIZED_DOMAINS" 2>/dev/null || true
     fi
 
     # Only show terminal session report for interactive Claude sessions, not --exec
@@ -1023,7 +1033,43 @@ cleanup() {
       echo ""
       echo "  Network Activity"
       echo "  ────────────────────────────────────────────────────────────"
-      echo "  Total: $total_count requests | Allowed: $allowed_count | Blocked: $blocked_count"
+      # Count recognized vs unknown blocked requests
+      local recognized_blocked_count=0 unknown_blocked_count=0
+      if [[ "$blocked_count" -gt 0 && -n "${_CS_RECOGNIZED_DOMAINS:-}" ]]; then
+        recognized_blocked_count=$(awk -v recog_str="$_CS_RECOGNIZED_DOMAINS" '
+          BEGIN {
+            n = split(recog_str, arr, "\n")
+            for (i = 1; i <= n; i++) {
+              d = arr[i]; gsub(/^[[:space:]]+|[[:space:]]+$/, "", d)
+              gsub(/^\.+|\.+$/, "", d)
+              if (d != "") recognized[d] = 1
+            }
+          }
+          # NOTE: is_recognized() logic duplicated in generate-report.sh — keep in sync
+          function is_recognized(host,    h, d) {
+            h = tolower(host); gsub(/\.$/, "", h)
+            for (d in recognized) {
+              if (h == d || (length(h) > length(d) && substr(h, length(h) - length(d)) == "." d))
+                return 1
+            }
+            return 0
+          }
+          /BLOCKED/ {
+            host = ""
+            if (/^\{/) { if (match($0, /"host":"([^"]+)"/, m)) host = m[1] }
+            else if (/^[0-9]{4}-/) { split($4, hp, ":"); host = hp[1] }
+            if (host != "" && is_recognized(host)) count++
+          }
+          END { print count+0 }
+        ' "$AUDIT_LOG" 2>/dev/null || echo "0")
+      fi
+      unknown_blocked_count=$((blocked_count - recognized_blocked_count))
+
+      local blocked_display="Blocked: $blocked_count"
+      if [[ "$recognized_blocked_count" -gt 0 ]]; then
+        blocked_display="Blocked: $blocked_count ($recognized_blocked_count recognized, $unknown_blocked_count unknown)"
+      fi
+      echo "  Total: $total_count requests | Allowed: $allowed_count | $blocked_display"
 
       # Show top domains
       if [[ $total_count -gt 0 ]]; then
@@ -1103,11 +1149,45 @@ cleanup() {
         fi
       fi
 
-      # Show blocked requests if any
-      if [[ "$blocked_count" -gt 0 ]]; then
+      # Show blocked requests — only unrecognized ones need review
+      if [[ "$unknown_blocked_count" -gt 0 ]]; then
         echo ""
         echo "  Blocked requests (review these):"
-        grep "BLOCKED" "$AUDIT_LOG" 2>/dev/null | tail -5 | sed 's/^/     /'
+        if [[ -n "${_CS_RECOGNIZED_DOMAINS:-}" ]]; then
+          # NOTE: is_recognized() logic duplicated in generate-report.sh — keep in sync
+          grep "BLOCKED" "$AUDIT_LOG" 2>/dev/null | awk -v recog_str="$_CS_RECOGNIZED_DOMAINS" '
+            BEGIN {
+              n = split(recog_str, arr, "\n")
+              for (i = 1; i <= n; i++) {
+                d = arr[i]; gsub(/^[[:space:]]+|[[:space:]]+$/, "", d)
+                gsub(/^\.+|\.+$/, "", d)
+                if (d != "") recognized[d] = 1
+              }
+            }
+            function is_recognized(host,    h, d) {
+              h = tolower(host); gsub(/\.$/, "", h)
+              for (d in recognized) {
+                if (h == d || (length(h) > length(d) && substr(h, length(h) - length(d)) == "." d))
+                  return 1
+              }
+              return 0
+            }
+            {
+              host = ""
+              if (/^\{/) {
+                if (match($0, /"host":"([^"]+)"/, m)) host = m[1]
+              } else if (/^[0-9]{4}-/) {
+                split($4, hp, ":"); host = hp[1]
+              }
+              if (host == "" || !is_recognized(host)) print
+            }
+          ' | tail -5 | sed 's/^/     /'
+        else
+          grep "BLOCKED" "$AUDIT_LOG" 2>/dev/null | tail -5 | sed 's/^/     /'
+        fi
+      elif [[ "$recognized_blocked_count" -gt 0 ]]; then
+        echo ""
+        echo "  Blocked requests: $recognized_blocked_count (all recognized — no review needed)"
       fi
 
       echo ""
@@ -1154,6 +1234,10 @@ if [[ "$DRY_RUN" == "1" ]]; then
   for p in "${WRITABLE_PATHS[@]}"; do echo "    $p"; done
   echo "  Allowed domains:"
   for d in "${ALLOWED_DOMAINS[@]}"; do echo "    $d"; done
+  if [[ ${#RECOGNIZED_DOMAINS[@]} -gt 0 ]]; then
+    echo "  Recognized domains (blocked but excluded from risk scoring):"
+    for d in "${RECOGNIZED_DOMAINS[@]}"; do echo "    $d"; done
+  fi
   exit 0
 fi
 

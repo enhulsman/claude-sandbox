@@ -71,6 +71,11 @@ allowed_domains = [
     "statsig.anthropic.com",
     "docs.claude.com",
 ]
+recognized_domains = [
+    # Known Claude telemetry — blocked but expected, excluded from risk scoring
+    "datadoghq.com",        # Anthropic monitoring (e.g. http-intake.logs.us5.datadoghq.com)
+    "sentry.io",            # Error reporting
+]
 
 [profile.nixos-admin.environment]
 # Additional env vars to pass through (for MCP support etc.)
@@ -178,6 +183,11 @@ allowed_domains = [
     "*.hulsman.dev",
     "*.arc8.dev",
 ]
+recognized_domains = [
+    # Known Claude telemetry — blocked but expected, excluded from risk scoring
+    "datadoghq.com",        # Anthropic monitoring (e.g. http-intake.logs.us5.datadoghq.com)
+    "sentry.io",            # Error reporting
+]
 
 [profile.dev.environment]
 # Additional env vars to pass through (for MCP support etc.)
@@ -211,6 +221,11 @@ allowed_domains = [
     "api.anthropic.com",
     "platform.claude.com",
     "statsig.anthropic.com",
+]
+recognized_domains = [
+    # Known Claude telemetry — blocked but expected, excluded from risk scoring
+    "datadoghq.com",        # Anthropic monitoring (e.g. http-intake.logs.us5.datadoghq.com)
+    "sentry.io",            # Error reporting
 ]
 
 [profile.strict.environment]
@@ -261,6 +276,11 @@ writable = [
 allowed_domains = [
     "api.anthropic.com",
     "statsig.anthropic.com",
+]
+recognized_domains = [
+    # Known Claude telemetry — blocked but expected, excluded from risk scoring
+    "datadoghq.com",        # Anthropic monitoring (e.g. http-intake.logs.us5.datadoghq.com)
+    "sentry.io",            # Error reporting
 ]
 
 [profile.macos-admin.environment]
