@@ -1253,7 +1253,7 @@ setup_socat_bridge() {
   SOCKET_DIR=$(mktemp -d /tmp/claude-sandbox-sock.XXXXXX)
   local socket_path="$SOCKET_DIR/proxy.sock"
 
-  socat "UNIX-LISTEN:${socket_path},fork,mode=777" "TCP:127.0.0.1:${PROXY_PORT}" &
+  socat "UNIX-LISTEN:${socket_path},fork,mode=777" "TCP:127.0.0.1:${PROXY_PORT}" 2>>"$SESSION_DIR/socat-host.log" &
   SOCAT_PID=$!
 
   # Wait for socket to be created (up to 3 seconds)

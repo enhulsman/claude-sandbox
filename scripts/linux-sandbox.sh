@@ -242,7 +242,7 @@ fi
 #    NOTE: This socat runs inside bwrap's network namespace. When bwrap exits,
 #    the network namespace is destroyed, causing this process to self-terminate.
 #    No explicit cleanup is needed from the host side.
-$SOCAT_BIN TCP-LISTEN:$INTERNAL_PROXY_PORT,bind=127.0.0.1,fork,reuseaddr UNIX-CONNECT:/run/sandbox/proxy.sock &
+$SOCAT_BIN TCP-LISTEN:$INTERNAL_PROXY_PORT,bind=127.0.0.1,fork,reuseaddr UNIX-CONNECT:/run/sandbox/proxy.sock 2>>"$_CS_SESSION_DIR/socat-sandbox.log" &
 
 # Give the bridge a moment to start
 $SLEEP_BIN 0.3
