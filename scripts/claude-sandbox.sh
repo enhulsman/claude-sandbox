@@ -78,6 +78,7 @@ PROXY_PID=""
 SOCAT_PID=""
 SOCKET_DIR=""
 SANDBOX_PID=""
+declare -a PORT_FORWARD_PIDS=()
 
 # ── Usage ─────────────────────────────────────────────────────
 usage() {
@@ -735,6 +736,10 @@ declare -a RECOGNIZED_DOMAINS=()
 while IFS= read -r line; do [[ -n "$line" ]] && RECOGNIZED_DOMAINS+=("$line"); done < \
   <(parse_profile_array "$CONFIG_FILE" "$PROFILE" "network.recognized_domains")
 
+declare -a PORT_FORWARDS=()
+while IFS= read -r line; do [[ -n "$line" ]] && PORT_FORWARDS+=("$line"); done < \
+  <(parse_profile_array "$CONFIG_FILE" "$PROFILE" "network.port_forwards")
+
 # Workspace is always writable
 WRITABLE_PATHS+=("$WORKSPACE")
 
@@ -757,6 +762,12 @@ if [[ ${#RECOGNIZED_DOMAINS[@]} -gt 0 ]]; then
 else
   _CS_RECOGNIZED_DOMAINS=""
 fi
+export _CS_PORT_FORWARDS
+if [[ ${#PORT_FORWARDS[@]} -gt 0 ]]; then
+  _CS_PORT_FORWARDS="$(printf '%s\n' "${PORT_FORWARDS[@]}")"
+else
+  _CS_PORT_FORWARDS=""
+fi
 export _CS_WORKSPACE="$WORKSPACE"
 export _CS_AUDIT_LOG="$AUDIT_LOG"
 export _CS_SESSION_ID
@@ -775,6 +786,16 @@ if [[ -n "$_passthrough_output" ]]; then
   done <<< "$_passthrough_output"
 fi
 unset _passthrough_output
+
+# Parse pre-start services list
+declare -a PRE_START_SERVICES=()
+_pre_start_output="$(parse_profile_array "$CONFIG_FILE" "$PROFILE" "services.pre_start")"
+if [[ -n "$_pre_start_output" ]]; then
+  while IFS= read -r line; do
+    [[ -n "$line" ]] && PRE_START_SERVICES+=("$line")
+  done <<< "$_pre_start_output"
+fi
+unset _pre_start_output
 
 # Export for sub-scripts
 export _CS_PASSTHROUGH_ENV
@@ -998,6 +1019,18 @@ cleanup() {
     sleep 0.2
     kill -9 "$SOCAT_PID" 2>/dev/null || true
   fi
+
+  # Kill port-forward socat bridges
+  for _pf_pid in "${PORT_FORWARD_PIDS[@]}"; do
+    [[ -z "${_pf_pid:-}" ]] && continue
+    kill "$_pf_pid" 2>/dev/null || true
+  done
+  sleep 0.1
+  for _pf_pid in "${PORT_FORWARD_PIDS[@]}"; do
+    [[ -z "${_pf_pid:-}" ]] && continue
+    kill -9 "$_pf_pid" 2>/dev/null || true
+    wait "$_pf_pid" 2>/dev/null || true
+  done
 
   # Clean up socket directory
   [[ -n "${SOCKET_DIR:-}" ]] && rm -rf "$SOCKET_DIR" 2>/dev/null || true
@@ -1241,6 +1274,27 @@ if [[ "$DRY_RUN" == "1" ]]; then
   exit 0
 fi
 
+# ── Ensure pre-start services are running ─────────────────────
+# Idempotent: systemctl start is a no-op if already active.
+# Runs BEFORE proxy/socat setup so port-forwarded services are
+# available by the time the sandbox connects.
+if [[ ${#PRE_START_SERVICES[@]} -gt 0 ]]; then
+  for svc in "${PRE_START_SERVICES[@]}"; do
+    [[ -z "$svc" ]] && continue
+    # Validate: only alphanumeric, hyphens, underscores (no path traversal)
+    if ! [[ "$svc" =~ ^[a-zA-Z0-9_-]+$ ]]; then
+      echo "ERROR: Invalid service name in pre_start: '$svc'" >&2
+      exit 1
+    fi
+    if ! systemctl --user is-active --quiet "$svc" 2>/dev/null; then
+      echo "  Starting service: $svc"
+      if ! systemctl --user start "$svc" 2>/dev/null; then
+        echo "WARNING: Failed to start service '$svc' — port-forwarded tools may be unavailable" >&2
+      fi
+    fi
+  done
+fi
+
 # ── Host-side socat bridge (Linux only) ───────────────────────
 # On Linux, bubblewrap's --unshare-net creates a completely empty network
 # namespace. A Unix socket bridged by socat is the sole communication channel
@@ -1253,7 +1307,7 @@ setup_socat_bridge() {
   SOCKET_DIR=$(mktemp -d /tmp/claude-sandbox-sock.XXXXXX)
   local socket_path="$SOCKET_DIR/proxy.sock"
 
-  socat "UNIX-LISTEN:${socket_path},fork,mode=777" "TCP:127.0.0.1:${PROXY_PORT}" 2>>"$SESSION_DIR/socat-host.log" &
+  socat "UNIX-LISTEN:${socket_path},fork,mode=600" "TCP:127.0.0.1:${PROXY_PORT}" 2>>"$SESSION_DIR/socat-host.log" &
   SOCAT_PID=$!
 
   # Wait for socket to be created (up to 3 seconds)
@@ -1271,13 +1325,43 @@ setup_socat_bridge() {
   export _CS_SOCKET_DIR="$SOCKET_DIR"
 }
 
+# ── Host-side port-forward bridges (Linux only) ───────────────
+# For each configured port_forwards entry, create a socat bridge from a
+# Unix socket (pf-PORT.sock in SOCKET_DIR) to TCP 127.0.0.1:PORT on the
+# host. The matching sandbox-side bridge (in entry.sh) listens on TCP
+# localhost:PORT and connects to the Unix socket, making host services
+# reachable inside the sandbox without exposing the Docker socket.
+setup_port_forwards() {
+  [[ ${#PORT_FORWARDS[@]} -eq 0 ]] && return
+  for port in "${PORT_FORWARDS[@]}"; do
+    [[ -z "$port" ]] && continue
+    if ! [[ "$port" =~ ^[0-9]+$ ]] || (( port < 1024 || port > 65535 )); then
+      echo "ERROR: Invalid port_forwards entry: '$port'" >&2
+      exit 1
+    fi
+    local sock="$SOCKET_DIR/pf-${port}.sock"
+    socat "UNIX-LISTEN:${sock},fork,mode=600" "TCP:127.0.0.1:${port}" \
+      2>>"$SESSION_DIR/socat-pf.log" &
+    PORT_FORWARD_PIDS+=($!)
+    local i=0
+    while [[ ! -S "$sock" ]] && [[ $i -lt 30 ]]; do
+      sleep 0.1; ((i++)) || true
+    done
+    if [[ ! -S "$sock" ]]; then
+      echo "ERROR: port-forward socket for port $port failed" >&2
+      exit 1
+    fi
+  done
+}
+
 # ── Start Proxy and Dispatch ──────────────────────────────────
 start_proxy
 export _CS_PROXY_PORT="$PROXY_PORT"
 
-# Start host-side socat bridge (Linux only)
+# Start host-side socat bridge and port-forward bridges (Linux only)
 if [[ "${CLAUDE_SANDBOX_IS_LINUX:-0}" == "1" ]]; then
   setup_socat_bridge
+  setup_port_forwards
 fi
 
 echo "  Proxy: port $PROXY_PORT (PID $PROXY_PID)"

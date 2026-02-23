@@ -188,6 +188,17 @@ recognized_domains = [
     "datadoghq.com",        # Anthropic monitoring (e.g. http-intake.logs.us5.datadoghq.com)
     "sentry.io",            # Error reporting
 ]
+port_forwards = [
+    "3100",
+]
+
+[profile.dev.services]
+# Systemd user services to ensure are running before sandbox launch.
+# Each entry is a unit name (without .service suffix).
+# Uses: systemctl --user start <name>  (idempotent — no-op if already running)
+pre_start = [
+    "docker-mcp",
+]
 
 [profile.dev.environment]
 # Additional env vars to pass through (for MCP support etc.)

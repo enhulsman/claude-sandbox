@@ -20,6 +20,7 @@ readarray -t READ_ONLY_PATHS <<< "$_CS_READ_ONLY_PATHS"
 readarray -t BLOCKED_PATHS   <<< "$_CS_BLOCKED_PATHS"
 readarray -t WRITABLE_PATHS  <<< "$_CS_WRITABLE_PATHS"
 readarray -t PASSTHROUGH_ENV <<< "${_CS_PASSTHROUGH_ENV:-}"
+readarray -t PORT_FORWARDS  <<< "${_CS_PORT_FORWARDS:-}"
 
 # ── Path Security Utilities ───────────────────────────────────
 
@@ -217,6 +218,19 @@ _CS_NIX_STORE_PATH=$(echo "$PATH" | tr ':' '\n' | grep '^/nix/store' | paste -sd
 
 INTERNAL_PROXY_PORT=18080
 ENTRY_SCRIPT="$SOCKET_DIR/entry.sh"
+
+# Pre-generate port-forward socat lines for the entry script
+_PF_LINES=""
+for port in "${PORT_FORWARDS[@]}"; do
+  [[ -z "$port" ]] && continue
+  # Defense-in-depth: re-validate even though parent already checked
+  if ! [[ "$port" =~ ^[0-9]+$ ]] || (( port < 1024 || port > 65535 )); then
+    echo "WARNING: Skipping invalid port_forwards entry in entry script: '$port'" >&2
+    continue
+  fi
+  _PF_LINES+="$SOCAT_BIN TCP-LISTEN:${port},bind=127.0.0.1,fork,reuseaddr UNIX-CONNECT:/run/sandbox/pf-${port}.sock 2>/dev/null &"$'\n'
+done
+
 cat > "$ENTRY_SCRIPT" <<ENTRY_EOF
 #!/bin/sh
 # --- Sandbox entry point (runs inside bubblewrap) ---
@@ -244,7 +258,10 @@ fi
 #    No explicit cleanup is needed from the host side.
 $SOCAT_BIN TCP-LISTEN:$INTERNAL_PROXY_PORT,bind=127.0.0.1,fork,reuseaddr UNIX-CONNECT:/run/sandbox/proxy.sock 2>>"$_CS_SESSION_DIR/socat-sandbox.log" &
 
-# Give the bridge a moment to start
+# 2b. Port-forward bridges (host services accessible from sandbox)
+${_PF_LINES}
+
+# Give the bridges a moment to start
 $SLEEP_BIN 0.3
 
 # 3. Preserve nix store paths for child shells.
@@ -480,7 +497,10 @@ BWRAP_ARGS+=(
   --setenv HTTP_PROXY  "http://127.0.0.1:${INTERNAL_PROXY_PORT}"
   --setenv HTTPS_PROXY "http://127.0.0.1:${INTERNAL_PROXY_PORT}"
   --setenv ALL_PROXY   "http://127.0.0.1:${INTERNAL_PROXY_PORT}"
-  --setenv NO_PROXY    ""
+  # NO_PROXY bypasses egress proxy for localhost. Safe because --unshare-net
+  # creates an empty network namespace — only explicitly bridged ports (via
+  # socat in entry.sh) are reachable on 127.0.0.1 inside the sandbox.
+  --setenv NO_PROXY    "127.0.0.1,localhost"
   --setenv CLAUDE_SANDBOX_WORKSPACE "$_CS_WORKSPACE"
 )
 
