@@ -816,6 +816,9 @@ fi
 # Uses --append-system-prompt-file to inject without touching user files.
 # SANDBOX_CONTEXT_FILE is set earlier in session directory setup.
 if [[ ${#EXEC_CMD[@]} -eq 0 ]]; then
+  # NOTE: Delimiter is UNQUOTED — variables expand. Use \$ for literals.
+  # /lib64 is base-mounted on 64-bit systems but omitted from the prompt —
+  # Claude never interacts with dynamic linker paths.
   cat > "$SANDBOX_CONTEXT_FILE" <<CONTEXT_EOF
 # Sandbox Environment
 
@@ -839,10 +842,45 @@ Read-only paths (you can read but not write):
 $(for p in "${READ_ONLY_PATHS[@]}"; do [[ -n "$p" ]] && echo "- $p"; done)
 
 Writable paths:
-$(for p in "${WRITABLE_PATHS[@]}"; do [[ -n "$p" ]] && echo "- $p"; done)
-- $WORKSPACE (sandbox workspace — always writable)
+$(for p in "${WRITABLE_PATHS[@]}"; do
+  [[ -n "$p" ]] || continue
+  if [[ "$p" == "$WORKSPACE" ]]; then
+    echo "- $p (sandbox workspace — always writable)"
+  else
+    echo "- $p"
+  fi
+done)
 
 Write all output files to the workspace: $WORKSPACE
+
+$(if [[ "${CLAUDE_SANDBOX_IS_LINUX:-0}" == "1" ]]; then
+cat <<LINUX_EOF
+## Missing or Empty Home Directories (Linux)
+
+On Linux, \$HOME starts empty inside the sandbox — only paths listed in
+the read-only and writable lists above are bind-mounted. System paths
+(/usr, /etc, /bin, /lib, /sbin, /proc, /dev, /tmp) are always available
+as base mounts$(if [[ -d /nix ]]; then echo ", plus /nix on this system"; fi).
+
+If you explore a \$HOME path not in the lists and find it empty or
+missing, do NOT conclude the files don't exist on the host. Instead:
+
+1. Tell the user the path is likely not mounted in the sandbox
+2. Write a diagnostic script to $WORKSPACE/sandbox-scripts/ that the
+   user can run on the host, and tell them the path
+3. Suggest adding the path to \`filesystem.read_only\` in config.toml
+   for future sessions
+4. Ask the user to share the script output so you can continue
+
+When writing diagnostic scripts, limit them to read-only operations
+(ls, find, stat, cat). Never include write operations, network access,
+or commands that modify system state. Tell the user to review the script
+before running it.
+
+The sandbox uses a separate PID namespace — ps and top only show
+processes inside the sandbox, not host services.
+LINUX_EOF
+fi)
 
 ## Network
 
@@ -851,46 +889,43 @@ are reachable:
 $(for d in "${ALLOWED_DOMAINS[@]}"; do echo "- $d"; done)
 
 Any request to other domains will be blocked. Do not attempt to curl,
-wget, or fetch from unlisted domains — it will fail silently or return
-a connection error. If you need a resource from a blocked domain,
-tell the user which URL you need and ask them to provide the content.
+wget, or fetch from unlisted domains — plain HTTP requests receive an
+HTTP 403 error ("Blocked by sandbox"), HTTPS requests fail because the
+proxy rejects the CONNECT tunnel, and non-HTTP traffic (ping, raw TCP)
+fails with a connection error since the sandbox has no direct network
+access. If you need a resource from a blocked domain, tell the user
+which URL you need and ask them to provide the content.
 
 ## Network Access Warning
 
-Allowed domains have FULL bidirectional access (GET, POST, PUT, DELETE) over HTTPS.
-The proxy cannot filter HTTP methods inside TLS tunnels — it only sees encrypted bytes.
-
-If you allow a domain, assume Claude can POST data to it.
+You have full bidirectional HTTPS access to allowed domains. The proxy
+cannot filter HTTP methods inside TLS tunnels — it only sees the target
+hostname during CONNECT.
 
 ## Git Operations
 
 Git credentials are blocked for security. Git read operations (log, diff, status,
 blame, show) work normally. Git write operations have restrictions:
 
-- **git commit**: Fails with "Please tell me who you are" unless the user provides
-  identity via GIT_AUTHOR_NAME/GIT_AUTHOR_EMAIL environment variables
+- **git commit**: Works if ~/.gitconfig has [user] name/email configured.
+  Otherwise fails with "Please tell me who you are" — suggest the user
+  configure their gitconfig or provide GIT_AUTHOR_NAME/EMAIL env vars.
 - **git push (HTTPS)**: Will prompt for credentials; user must enter manually
 - **git push (SSH)**: Not supported — SSH keys are blocked and SSH traffic cannot
   go through the HTTP proxy
 
-If git operations fail, explain this to the user and suggest:
-1. For commits: Ask user to provide GIT_AUTHOR_NAME/EMAIL env vars
-2. For push: Ask user to push outside the sandbox, or enter HTTPS credentials manually
-
+If git operations fail, explain this to the user and suggest alternatives.
 Do NOT suggest workarounds involving SSH keys or credential files.
 
 Note: Git configuration (~/.gitconfig) is readable for normal operations, but
-credential stores (~/.git-credentials, ~/.config/gh) are blocked. If your gitconfig
-contains inline credentials in URLs, consider removing them before using the sandbox.
+credential stores (~/.git-credentials, ~/.config/gh) are blocked.
 
 ## Handling Restrictions
 
-When you encounter a "Permission denied", "No such file", or
-"Connection refused" error:
-1. Check if the path/domain is in the blocked/unlisted lists above
-2. If yes: explain to the user that the sandbox blocks this access
-   and suggest an alternative approach
-3. Do NOT retry the same command or attempt workarounds
+When you encounter "Permission denied", "No such file", or "Connection
+refused" errors caused by sandbox restrictions, explain the restriction
+to the user and suggest an alternative approach. Do NOT retry the same
+command or attempt workarounds.
 CONTEXT_EOF
 
   # Inject the context file as a system prompt addendum
