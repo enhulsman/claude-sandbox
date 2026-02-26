@@ -105,6 +105,7 @@ read_only = [
     "~/.local/share/icons/",
     "~/.local/share/applications/",
     "/run/current-system",
+    "~/Documents/homelab-docs-site/",
     # Git config (metadata only, not credentials)
     "~/.gitconfig",
     "~/.config/git",
