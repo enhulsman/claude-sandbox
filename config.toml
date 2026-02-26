@@ -97,6 +97,14 @@ read_only = [
     "/etc/ssl",
     "/etc/hosts",
     "~/.claude-config",
+    "~/.cache",
+    # Session screenshots
+    "~/Pictures/Screenshots/",
+    # Icon checking
+    "~/.nix-profile/share/icons/",
+    "~/.local/share/icons/",
+    "~/.local/share/applications/",
+    "/run/current-system",
     # Git config (metadata only, not credentials)
     "~/.gitconfig",
     "~/.config/git",
@@ -125,6 +133,7 @@ blocked = [
 writable = [
     ".",
     "~/.dotfiles",
+    "~/.local/share/ambxst-patched",
 ]
 
 [profile.dev.network]
