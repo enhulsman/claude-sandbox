@@ -1538,6 +1538,14 @@ export _CS_PROXY_PORT="$PROXY_PORT"
 if [[ "${CLAUDE_SANDBOX_IS_LINUX:-0}" == "1" ]]; then
   setup_socat_bridge
   setup_port_forwards
+
+  # Snapshot ~/.claude.json into socket dir for sandbox entry script.
+  # Individual file bind mounts go stale when the host atomically replaces
+  # the file (new inode). Copying via the socket dir (mounted at /run/sandbox)
+  # ensures the sandbox always starts with the current account state.
+  if [[ -f "$HOME/.claude.json" ]]; then
+    cp "$HOME/.claude.json" "$SOCKET_DIR/host-claude.json"
+  fi
 fi
 
 echo "  Proxy: port $PROXY_PORT (PID $PROXY_PID)"

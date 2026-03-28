@@ -279,7 +279,13 @@ echo 'export PATH="${_CS_NIX_STORE_PATH}:\$PATH"' > "\$HOME/.zshenv"
 #    inner bwrap can use it as a mount point and CWD tracking target.
 mkdir -p "/tmp/claude-\$(id -u)" 2>/dev/null || true
 
-# 5. Exec Claude Code with all arguments
+# 5. Restore ~/.claude.json from host snapshot.
+#    See bwrap argument section for why this is a copy, not a bind mount.
+if [ -f /run/sandbox/host-claude.json ]; then
+  cp /run/sandbox/host-claude.json "\$HOME/.claude.json"
+fi
+
+# 6. Exec Claude Code with all arguments
 exec $CLAUDE_BIN_REAL "\$@"
 ENTRY_EOF
 chmod +x "$ENTRY_SCRIPT"
@@ -467,9 +473,10 @@ fi
 # This prevents prompt injection from removing deny rules
 [[ -f "$SETTINGS_FILE" ]]     && BWRAP_ARGS+=(--ro-bind "$SETTINGS_FILE" "$SETTINGS_FILE")
 [[ -d "$CLAUDE_CONFIG_ALT" ]] && BWRAP_ARGS+=(--bind "$CLAUDE_CONFIG_ALT" "$CLAUDE_CONFIG_ALT")
-# ~/.claude.json holds oauthAccount binding (accountUuid, organizationUuid).
-# Without it, interactive mode can't identify the user and shows the login screen.
-[[ -f "$CLAUDE_JSON" ]]       && BWRAP_ARGS+=(--bind "$CLAUDE_JSON" "$CLAUDE_JSON")
+# NOTE: ~/.claude.json is NOT bind-mounted individually. Individual file bind
+# mounts go stale when the file is atomically replaced (new inode), causing the
+# sandbox to see deleted data. Instead, the entry script copies it from
+# /run/sandbox/host-claude.json (snapshotted by claude-sandbox.sh at launch).
 
 # Workspace — mounted by the writable paths loop above (via profile config).
 # The launcher (claude-sandbox.sh) always injects $_CS_WORKSPACE into

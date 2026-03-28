@@ -137,3 +137,11 @@ security-critical work.
 The file `~/.claude/settings.json` contains security-critical deny rules that control
 what Claude Code is allowed to do. On Linux, this file is mounted read-only inside
 the sandbox to prevent prompt injection attacks from removing deny rules.
+
+### ~/.claude.json (Account State)
+
+This file is copied into the sandbox at launch rather than bind-mounted. Individual
+file bind mounts go stale when the file is atomically replaced on the host (new inode,
+old mount points at deleted data). Changes to `~/.claude.json` inside the sandbox
+(e.g., `/login`) do not propagate back to the host — restart the sandbox to pick up
+account changes.
