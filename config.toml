@@ -105,7 +105,10 @@ read_only = [
     "~/.local/share/icons/",
     "~/.local/share/applications/",
     "/run/current-system",
+    # Specific projects
     "~/Documents/homelab-docs-site/",
+    "~/Coding/Anamata/MCPs/",
+    "~/.local/bin/",
     # Git config (metadata only, not credentials)
     "~/.gitconfig",
     "~/.config/git",
@@ -175,11 +178,36 @@ allowed_domains = [
 
     # Node/JS
     "registry.npmjs.org",
+    "www.npmjs.com",
+
+    # CDNs
+    "cdn.jsdelivr.net",
+    "unpkg.com",
+    "esm.sh",
+    "cdnjs.cloudflare.com",
+
+    # Fonts
+    "fonts.googleapis.com",
+    "fonts.gstatic.com",
+
+    # Frontend / Animation docs (for WebFetch during build)
+    "ui.aceternity.com",
+    "magicui.design",
+    "motion.dev",
+    "gsap.com",
+    "tailwindcss.com",
+    "ui.shadcn.com",
+    "lenis.darkroom.engineering",
+    "nextjs.org",
 
     # Linux docs
     "wiki.archlinux.org",
     "man7.org",
     "kernel.org",
+
+    # Mermaid diagrams
+    "mermaid.ai",
+    "mermaid.js.org",
 
     # General reference
     "stackoverflow.com",
@@ -193,6 +221,7 @@ allowed_domains = [
     "*.hulsman.dev",
     "*.arc8.dev",
 ]
+
 recognized_domains = [
     # Known Claude telemetry — blocked but expected, excluded from risk scoring
     "datadoghq.com",        # Anthropic monitoring (e.g. http-intake.logs.us5.datadoghq.com)
